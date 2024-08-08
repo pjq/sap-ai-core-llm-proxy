@@ -1,0 +1,2 @@
+flask
+ai_core_sdk
