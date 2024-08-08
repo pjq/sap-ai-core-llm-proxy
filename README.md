@@ -1,6 +1,8 @@
 # sap-ai-core LLM Proxy Server
 
-This project sets up a proxy server to interact with SAP AI Core services, specifically designed for handling Large Language Model (LLM) requests.
+This project establishes a proxy server to interface with SAP AI Core services, specifically tailored for handling Large Language Model (LLM) requests.
+
+It is compatible with any application that supports the OpenAI API, so you can use it in other Applications, e.g. [Cursor IDE](https://www.cursor.com/) or [Chitchat](https://github.com/pjq/ChitChat/).
 
 ## Overview
 `sap-ai-core-llm-proxy` is a Python-based project that includes functionalities for token management, forwarding requests to the SAP AI Core API, and handling responses. The project uses Flask to implement the proxy server.
@@ -67,14 +69,33 @@ This project sets up a proxy server to interact with SAP AI Core services, speci
     app.run(host='127.0.0.1', port=443, debug=True, ssl_context=('cert.pem', 'key.pem'))
     ```
 
-## Usage
+## Running the Proxy Server
 
-### Running the Proxy Server
+### Running the Proxy Server over HTTP
 Start the proxy server using the following command:
 ```sh
 python proxy_server.py
 ```
 The server will run on `http://127.0.0.1:5000`.
+
+### Running the Proxy Server over HTTPS
+To run the proxy server over HTTPS, you need to generate SSL certificates. You can use the following command to generate a self-signed certificate and key:
+
+```sh
+openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365 -nodes
+```
+
+This will generate `cert.pem` and `key.pem` files. Place these files in the project root directory. Then, start the proxy server using the following command:
+```sh
+python proxy_server.py
+```
+Ensure that your `proxy_server.py` includes the following line to enable HTTPS:
+```python
+if __name__ == '__main__':
+    logging.info("Starting proxy server...")
+    app.run(host='127.0.0.1', port=8443, debug=True, ssl_context=('cert.pem', 'key.pem'))
+```
+The server will run on `https://127.0.0.1:8443`.
 
 ### Sending a Demo Request
 You can send a demo request to the proxy server using the `proxy_server_demo_request.py` script:
@@ -84,7 +105,6 @@ python proxy_server_demo_request.py
 
 ## Cursor(AI IDE) Integration
 You can run the proxy_server in your public server, then you can update the base_url in the Cursor model settings
-
 
 ## License
 This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.

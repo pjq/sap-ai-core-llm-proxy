@@ -162,3 +162,5 @@ cython_debug/
 aicoredemo.json
 demokey.json
 config.json
+key.pem
+cert.pem
