@@ -74,7 +74,8 @@ def convert_openai_to_claude(payload):
     # Conversion logic from OpenAI to Claude API format
     claude_payload = {
         "anthropic_version": "bedrock-2023-05-31",
-        "max_tokens": payload.get("max_tokens", 100),
+        # "stream": payload.get("stream", False),
+        "max_tokens": payload.get("max_tokens", 4096),
         "messages": payload["messages"]
     }
     return claude_payload
@@ -187,7 +188,6 @@ def proxy_openai_stream():
     }
 
     logging.info(f"Forwarding request to {url} with payload: {payload}")
-    logging.info(f"Forwarding request headers: {headers}")
 
     # Stream the response from the OpenAI API
     def generate():
