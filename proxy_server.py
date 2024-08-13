@@ -71,12 +71,18 @@ def verify_request_token(request):
     return True
 
 def convert_openai_to_claude(payload):
+    # Extract system message if present
+    system_message = ""
+    messages = payload["messages"]
+    if messages and messages[0]["role"] == "system":
+        system_message = messages.pop(0)["content"][0]["text"]
+
     # Conversion logic from OpenAI to Claude API format
     claude_payload = {
         "anthropic_version": "bedrock-2023-05-31",
-        # "stream": payload.get("stream", False),
         "max_tokens": payload.get("max_tokens", 4096),
-        "messages": payload["messages"]
+        "system": system_message,
+        "messages": messages
     }
     return claude_payload
 
