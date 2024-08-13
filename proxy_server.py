@@ -185,6 +185,7 @@ def proxy_openai_stream():
     }
 
     logging.info(f"Forwarding request to {url} with payload: {payload}")
+    logging.info(f"Forwarding request headers: {headers}")
 
     # Stream the response from the OpenAI API
     def generate():
