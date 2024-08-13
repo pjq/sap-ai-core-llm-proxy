@@ -61,7 +61,7 @@ def demo_request_stream():
         "presence_penalty": 0,
         "stream": False,
         "stop": None,
-        "model": "gpt-4o"
+        "model": "claude-3.5-sonnet"
     }
 
     logging.info(f"Sending demo request to {url} with payload: {payload}")

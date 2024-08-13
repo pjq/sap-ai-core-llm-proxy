@@ -27,6 +27,10 @@ service_key_json = config['service_key_json']
 model_deployment_urls = config['deployment_models']
 secret_authentication_tokens = config['secret_authentication_tokens']
 resource_group = config['resource_group']
+# Normalize model_deployment_urls keys
+normalized_model_deployment_urls = {
+    key.replace("anthropic--", ""): value for key, value in model_deployment_urls.items()
+}
 
 # Load service key
 service_key = load_config(service_key_json)
@@ -65,6 +69,40 @@ def verify_request_token(request):
         logging.error("Invalid or missing token.")
         return False
     return True
+
+def convert_openai_to_claude(payload):
+    # Conversion logic from OpenAI to Claude API format
+    claude_payload = {
+        "anthropic_version": "bedrock-2023-05-31",
+        "max_tokens": payload.get("max_tokens", 100),
+        "messages": payload["messages"]
+    }
+    return claude_payload
+
+def convert_claude_to_openai(response):
+    # Conversion logic from Claude API to OpenAI format
+    openai_response = {
+        "choices": [
+            {
+                "finish_reason": "stop",
+                "index": 0,
+                "message": {
+                    "content": response["choices"][0]["message"]["content"],
+                    "role": "assistant"
+                }
+            }
+        ],
+        "created": int(time.time()),
+        "id": response.get("id", "chatcmpl-unknown"),
+        "model": "claude-v1",
+        "object": "chat.completion",
+        "usage": {
+            "completion_tokens": response.get("usage", {}).get("completion_tokens", 0),
+            "prompt_tokens": response.get("usage", {}).get("prompt_tokens", 0),
+            "total_tokens": response.get("usage", {}).get("total_tokens", 0)
+        }
+    }
+    return openai_response
 
 @app.route('/v1/chat/completions', methods=['OPTIONS'])
 def proxy_openai_stream2():
@@ -109,6 +147,7 @@ def list_models():
     
     return jsonify({"object": "list", "data": models}), 200
 
+
 content_type="Application/json"
 @app.route('/v1/chat/completions', methods=['POST'])
 def proxy_openai_stream():
@@ -125,14 +164,19 @@ def proxy_openai_stream():
     # Extract model from the request payload
     payload = request.json
     model = payload.get("model")
-    if not model or model not in model_deployment_urls:
+    
+    if not model or model not in normalized_model_deployment_urls:
         logging.info("Model not found in deployment URLs, falling back to gpt-4o")
         model = "gpt-4o"
     logging.info(f"Extracted model from request payload: {model}")
-    if not model or model not in model_deployment_urls:
+    if not model or model not in normalized_model_deployment_urls:
         return jsonify({"error": "Invalid or missing model"}), 400
 
-    url = f"{model_deployment_urls[model]}/chat/completions?api-version=2023-05-15"
+    if "claude" in model:
+        url = f"{normalized_model_deployment_urls[model]}/invoke"
+        payload = convert_openai_to_claude(payload)
+    else:
+        url = f"{normalized_model_deployment_urls[model]}/chat/completions?api-version=2023-05-15"
 
     headers = {
         "AI-Resource-Group": resource_group,

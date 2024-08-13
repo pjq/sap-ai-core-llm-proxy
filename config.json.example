@@ -3,7 +3,8 @@
     "deployment_models": {
         "gpt-4o": "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/<hidden_id_1>",
         "gpt-4": "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/<hidden_id_2>",
-        "gpt-4-32k": "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/<hidden_id_3>"
+        "gpt-4-32k": "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/<hidden_id_3>",
+        "anthropic--claude-3.5-sonnet": "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/<hidden_id_4>"
     },
     "secret_authentication_tokens": ["<hidden_key_1>", "<hidden_key_2>", "<hidden_key_3>", "<hidden_key_4>"],
     "resource_group": "default"
