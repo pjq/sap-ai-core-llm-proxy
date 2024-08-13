@@ -194,7 +194,7 @@ def proxy_openai_stream():
                 content_type = response.headers.get('Content-Type')
                 for chunk in response.iter_content(chunk_size=128):  # Reduced chunk size
                     if chunk:
-                        print(chunk)
+                        #print(chunk)
                         yield chunk
                         # Explicitly flush the response to ensure timely delivery
                         time.sleep(0.01)  # Small sleep to avoid overwhelming the client
