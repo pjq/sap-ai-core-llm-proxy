@@ -164,13 +164,15 @@ def proxy_openai_stream():
     # Extract model from the request payload
     payload = request.json
     model = payload.get("model")
-    
+    logging.info(f"Extracted model from request payload: {model}")
+
     if not model or model not in normalized_model_deployment_urls:
         logging.info("Model not found in deployment URLs, falling back to gpt-4o")
         model = "gpt-4o"
-    logging.info(f"Extracted model from request payload: {model}")
-    if not model or model not in normalized_model_deployment_urls:
-        return jsonify({"error": "Invalid or missing model"}), 400
+
+    # Remove the second check for model validity
+    # if not model or model not in normalized_model_deployment_urls:
+    #     return jsonify({"error": "Invalid or missing model"}), 400
 
     if "claude" in model:
         url = f"{normalized_model_deployment_urls[model]}/invoke"
@@ -195,9 +197,7 @@ def proxy_openai_stream():
                 content_type = response.headers.get('Content-Type')
                 for chunk in response.iter_content(chunk_size=128):  # Reduced chunk size
                     if chunk:
-                        #print(chunk)
                         yield chunk
-                        # Explicitly flush the response to ensure timely delivery
                         time.sleep(0.01)  # Small sleep to avoid overwhelming the client
                 logging.info("Request to actual API succeeded.")
             except requests.exceptions.HTTPError as err:
