@@ -114,7 +114,6 @@ def convert_claude_to_openai(response):
 def convert_claude_chunk_to_openai(chunk):
     try:
         # Parse the Claude chunk
-        # data = json.loads(chunk.decode('utf-8').replace("data: ", "").strip())
         data = json.loads(chunk.replace("data: ", "").strip())
         
         # Initialize the OpenAI chunk structure
@@ -146,6 +145,23 @@ def convert_claude_chunk_to_openai(chunk):
     except Exception as e:
         logging.error(f"Error processing chunk: {e}")
         return f"data: {{\"error\": \"Error processing chunk\"}}\n\n"
+
+def is_claude_model(model):
+    return "claude" in model or "sonnet" in model
+
+def handle_claude_request(payload):
+    for key in normalized_model_deployment_urls:
+        if 'claud' in key or 'sonnet' in key:
+            url = f"{normalized_model_deployment_urls[key]}/invoke-with-response-stream"
+            break
+    else:
+        raise ValueError("No valid Claude or Sonnet model found in deployment URLs.")
+    payload = convert_openai_to_claude(payload)
+    return url, payload
+
+def handle_default_request(payload):
+    url = f"{normalized_model_deployment_urls['gpt-4o']}/chat/completions?api-version=2023-05-15"
+    return url, payload
 
 @app.route('/v1/chat/completions', methods=['OPTIONS'])
 def proxy_openai_stream2():
@@ -190,7 +206,6 @@ def list_models():
     
     return jsonify({"object": "list", "data": models}), 200
 
-
 content_type="Application/json"
 @app.route('/v1/chat/completions', methods=['POST'])
 def proxy_openai_stream():
@@ -213,11 +228,10 @@ def proxy_openai_stream():
         logging.info("Model not found in deployment URLs, falling back to gpt-4o")
         model = "gpt-4o"
 
-    if "claude" in model:
-        url = f"{normalized_model_deployment_urls[model]}/invoke-with-response-stream"
-        payload = convert_openai_to_claude(payload)
+    if is_claude_model(model):
+        url, payload = handle_claude_request(payload)
     else:
-        url = f"{normalized_model_deployment_urls[model]}/chat/completions?api-version=2023-05-15"
+        url, payload = handle_default_request(payload)
 
     headers = {
         "AI-Resource-Group": resource_group,
@@ -234,7 +248,7 @@ def proxy_openai_stream():
                 response.raise_for_status()
                 for chunk in response.iter_content(chunk_size=128):  # Reduced chunk size
                     if chunk:
-                        if "claude" in model:
+                        if is_claude_model(model):
                             buffer += chunk.decode('utf-8')
                             while "data: " in buffer:
                                 try:
@@ -261,6 +275,4 @@ def proxy_openai_stream():
 
 if __name__ == '__main__':
     logging.info("Starting proxy server...")
-    #app.run(host='127.0.0.1', port=8443, debug=True, ssl_context=('cert.pem', 'key.pem'))
-    #app.run(host='127.0.0.1', port=5000, debug=True)
     app.run(host='127.0.0.1', port=5000, debug=True)
