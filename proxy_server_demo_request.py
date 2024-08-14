@@ -52,14 +52,14 @@ def demo_request_stream():
         "messages": [
             {
                 "role": "user",
-                "content": "Hello, who are you? what can you do"
+                "content": "Hi"
             }
         ],
         "max_tokens": 100,
         "temperature": 0.0,
         "frequency_penalty": 0,
         "presence_penalty": 0,
-        "stream": False,
+        "stream": True,
         "stop": None,
         "model": "claude-3.5-sonnet"
         # "model": "gpt-4o"

@@ -7,6 +7,10 @@ It is compatible with any application that supports the OpenAI API, so you can u
 ## Overview
 `sap-ai-core-llm-proxy` is a Python-based project that includes functionalities for token management, forwarding requests to the SAP AI Core API, and handling responses. The project uses Flask to implement the proxy server.
 
+Now it support the following LLM models
+- OpenAI: gpt-4o,gpt-4,gpt-4-32k
+- Claude: anthropic--claude-3.5-sonnet
+
 ## Features
 - **Token Management**: Fetch and cache tokens for authentication.
 - **Proxy Server**: Forward requests to the AI API with token management.
@@ -105,6 +109,12 @@ python proxy_server_demo_request.py
 
 ## Cursor(AI IDE) Integration
 You can run the proxy_server in your public server, then you can update the base_url in the Cursor model settings
+
+### Claude Integration
+It seems the IDE will block the request if the model contains claude, so we need to rename it to the name don't contains claude
+- claud
+- sonnet
+Now I am using `3.5-sonnet`
 
 ## License
 This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.

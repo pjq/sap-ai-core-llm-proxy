@@ -1,5 +1,5 @@
-import logging
-from flask import Flask, request, jsonify, Response, stream_with_context
+import logging  
+from flask import Flask, request, jsonify, Response, stream_with_context  
 import requests
 import time
 import threading
@@ -71,11 +71,18 @@ def verify_request_token(request):
     return True
 
 def convert_openai_to_claude(payload):
+    # Extract system message if present
+    system_message = ""
+    messages = payload["messages"]
+    if messages and messages[0]["role"] == "system":
+        system_message = messages.pop(0)["content"][0]["text"]
+
     # Conversion logic from OpenAI to Claude API format
     claude_payload = {
         "anthropic_version": "bedrock-2023-05-31",
-        "max_tokens": payload.get("max_tokens", 100),
-        "messages": payload["messages"]
+        "max_tokens": payload.get("max_tokens", 4096),
+        "system": system_message,
+        "messages": messages
     }
     return claude_payload
 
@@ -103,6 +110,58 @@ def convert_claude_to_openai(response):
         }
     }
     return openai_response
+
+def convert_claude_chunk_to_openai(chunk):
+    try:
+        # Parse the Claude chunk
+        data = json.loads(chunk.replace("data: ", "").strip())
+        
+        # Initialize the OpenAI chunk structure
+        openai_chunk = {
+            "choices": [
+                {
+                    "delta": {},
+                    "finish_reason": None,
+                    "index": 0
+                }
+            ],
+            "created": int(time.time()),
+            "id": data.get("message", {}).get("id", "chatcmpl-unknown"),
+            "model": "claude-v1",
+            "object": "chat.completion.chunk",
+            "system_fingerprint": "fp_36b0c83da2"
+        }
+
+        # Map Claude's content to OpenAI's delta
+        if data.get("type") == "content_block_delta":
+            openai_chunk["choices"][0]["delta"]["content"] = data["delta"]["text"]
+        elif data.get("type") == "message_delta" and data["delta"]["stop_reason"] == "end_turn":
+            openai_chunk["choices"][0]["finish_reason"] = "stop"
+
+        return f"data: {json.dumps(openai_chunk)}\n\n"
+    except json.JSONDecodeError as e:
+        logging.error(f"JSON decode error: {e}")
+        return f"data: {{\"error\": \"Invalid JSON format\"}}\n\n"
+    except Exception as e:
+        logging.error(f"Error processing chunk: {e}")
+        return f"data: {{\"error\": \"Error processing chunk\"}}\n\n"
+
+def is_claude_model(model):
+    return "claude" in model or "sonnet" in model
+
+def handle_claude_request(payload):
+    for key in normalized_model_deployment_urls:
+        if 'claud' in key or 'sonnet' in key:
+            url = f"{normalized_model_deployment_urls[key]}/invoke-with-response-stream"
+            break
+    else:
+        raise ValueError("No valid Claude or Sonnet model found in deployment URLs.")
+    payload = convert_openai_to_claude(payload)
+    return url, payload
+
+def handle_default_request(payload):
+    url = f"{normalized_model_deployment_urls['gpt-4o']}/chat/completions?api-version=2023-05-15"
+    return url, payload
 
 @app.route('/v1/chat/completions', methods=['OPTIONS'])
 def proxy_openai_stream2():
@@ -147,7 +206,6 @@ def list_models():
     
     return jsonify({"object": "list", "data": models}), 200
 
-
 content_type="Application/json"
 @app.route('/v1/chat/completions', methods=['POST'])
 def proxy_openai_stream():
@@ -170,15 +228,10 @@ def proxy_openai_stream():
         logging.info("Model not found in deployment URLs, falling back to gpt-4o")
         model = "gpt-4o"
 
-    # Remove the second check for model validity
-    # if not model or model not in normalized_model_deployment_urls:
-    #     return jsonify({"error": "Invalid or missing model"}), 400
-
-    if "claude" in model:
-        url = f"{normalized_model_deployment_urls[model]}/invoke"
-        payload = convert_openai_to_claude(payload)
+    if is_claude_model(model):
+        url, payload = handle_claude_request(payload)
     else:
-        url = f"{normalized_model_deployment_urls[model]}/chat/completions?api-version=2023-05-15"
+        url, payload = handle_default_request(payload)
 
     headers = {
         "AI-Resource-Group": resource_group,
@@ -187,17 +240,28 @@ def proxy_openai_stream():
     }
 
     logging.info(f"Forwarding request to {url} with payload: {payload}")
-    logging.info(f"Forwarding request headers: {headers}")
 
-    # Stream the response from the OpenAI API
     def generate():
+        buffer = ""
         with requests.post(url, headers=headers, json=payload, stream=True) as response:
             try:
                 response.raise_for_status()
-                content_type = response.headers.get('Content-Type')
                 for chunk in response.iter_content(chunk_size=128):  # Reduced chunk size
                     if chunk:
-                        yield chunk
+                        if is_claude_model(model):
+                            buffer += chunk.decode('utf-8')
+                            while "data: " in buffer:
+                                try:
+                                    start = buffer.index("data: ") + len("data: ")
+                                    end = buffer.index("\n\n", start)
+                                    json_chunk = buffer[start:end].strip()
+                                    buffer = buffer[end + 2:]
+                                    json_chunk = convert_claude_chunk_to_openai(json_chunk)
+                                    yield json_chunk.encode('utf-8')
+                                except ValueError:
+                                    break
+                        else:
+                            yield chunk
                         time.sleep(0.01)  # Small sleep to avoid overwhelming the client
                 logging.info("Request to actual API succeeded.")
             except requests.exceptions.HTTPError as err:
@@ -211,6 +275,4 @@ def proxy_openai_stream():
 
 if __name__ == '__main__':
     logging.info("Starting proxy server...")
-    #app.run(host='127.0.0.1', port=8443, debug=True, ssl_context=('cert.pem', 'key.pem'))
-    #app.run(host='127.0.0.1', port=5000, debug=True)
     app.run(host='127.0.0.1', port=5000, debug=True)
