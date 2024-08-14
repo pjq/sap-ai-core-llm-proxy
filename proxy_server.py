@@ -1,5 +1,5 @@
-import logging
-from flask import Flask, request, jsonify, Response, stream_with_context
+import logging  
+from flask import Flask, request, jsonify, Response, stream_with_context  
 import requests
 import time
 import threading
@@ -111,6 +111,42 @@ def convert_claude_to_openai(response):
     }
     return openai_response
 
+def convert_claude_chunk_to_openai(chunk):
+    try:
+        # Parse the Claude chunk
+        # data = json.loads(chunk.decode('utf-8').replace("data: ", "").strip())
+        data = json.loads(chunk.replace("data: ", "").strip())
+        
+        # Initialize the OpenAI chunk structure
+        openai_chunk = {
+            "choices": [
+                {
+                    "delta": {},
+                    "finish_reason": None,
+                    "index": 0
+                }
+            ],
+            "created": int(time.time()),
+            "id": data.get("message", {}).get("id", "chatcmpl-unknown"),
+            "model": "claude-v1",
+            "object": "chat.completion.chunk",
+            "system_fingerprint": "fp_36b0c83da2"
+        }
+
+        # Map Claude's content to OpenAI's delta
+        if data.get("type") == "content_block_delta":
+            openai_chunk["choices"][0]["delta"]["content"] = data["delta"]["text"]
+        elif data.get("type") == "message_delta" and data["delta"]["stop_reason"] == "end_turn":
+            openai_chunk["choices"][0]["finish_reason"] = "stop"
+
+        return f"data: {json.dumps(openai_chunk)}\n\n"
+    except json.JSONDecodeError as e:
+        logging.error(f"JSON decode error: {e}")
+        return f"data: {{\"error\": \"Invalid JSON format\"}}\n\n"
+    except Exception as e:
+        logging.error(f"Error processing chunk: {e}")
+        return f"data: {{\"error\": \"Error processing chunk\"}}\n\n"
+
 @app.route('/v1/chat/completions', methods=['OPTIONS'])
 def proxy_openai_stream2():
     logging.info("OPTIONS:Received request to /v1/chat/completions")
@@ -177,12 +213,8 @@ def proxy_openai_stream():
         logging.info("Model not found in deployment URLs, falling back to gpt-4o")
         model = "gpt-4o"
 
-    # Remove the second check for model validity
-    # if not model or model not in normalized_model_deployment_urls:
-    #     return jsonify({"error": "Invalid or missing model"}), 400
-
     if "claude" in model:
-        url = f"{normalized_model_deployment_urls[model]}/invoke"
+        url = f"{normalized_model_deployment_urls[model]}/invoke-with-response-stream"
         payload = convert_openai_to_claude(payload)
     else:
         url = f"{normalized_model_deployment_urls[model]}/chat/completions?api-version=2023-05-15"
@@ -195,15 +227,27 @@ def proxy_openai_stream():
 
     logging.info(f"Forwarding request to {url} with payload: {payload}")
 
-    # Stream the response from the OpenAI API
     def generate():
+        buffer = ""
         with requests.post(url, headers=headers, json=payload, stream=True) as response:
             try:
                 response.raise_for_status()
-                content_type = response.headers.get('Content-Type')
                 for chunk in response.iter_content(chunk_size=128):  # Reduced chunk size
                     if chunk:
-                        yield chunk
+                        if "claude" in model:
+                            buffer += chunk.decode('utf-8')
+                            while "data: " in buffer:
+                                try:
+                                    start = buffer.index("data: ") + len("data: ")
+                                    end = buffer.index("\n\n", start)
+                                    json_chunk = buffer[start:end].strip()
+                                    buffer = buffer[end + 2:]
+                                    json_chunk = convert_claude_chunk_to_openai(json_chunk)
+                                    yield json_chunk.encode('utf-8')
+                                except ValueError:
+                                    break
+                        else:
+                            yield chunk
                         time.sleep(0.01)  # Small sleep to avoid overwhelming the client
                 logging.info("Request to actual API succeeded.")
             except requests.exceptions.HTTPError as err:
