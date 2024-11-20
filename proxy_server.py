@@ -225,8 +225,8 @@ def proxy_openai_stream():
     logging.info(f"Extracted model from request payload: {model}")
 
     if not model or model not in normalized_model_deployment_urls:
-        logging.info("Model not found in deployment URLs, falling back to gpt-4o")
-        model = "gpt-4o"
+        logging.info("Model not found in deployment URLs, falling back to 3.5-sonnet")
+        model = "3.5-sonnet"
 
     if is_claude_model(model):
         url, payload = handle_claude_request(payload)
