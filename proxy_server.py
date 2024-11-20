@@ -77,8 +77,7 @@ def convert_openai_to_claude(payload):
     system_message = ""
     messages = payload["messages"]
     if messages and messages[0]["role"] == "system":
-        system_message = messages.pop(0)["content"][0]["text"]
-
+        system_message = messages.pop(0)["content"]
     # Conversion logic from OpenAI to Claude API format
     claude_payload = {
         "anthropic_version": "bedrock-2023-05-31",
