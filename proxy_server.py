@@ -159,6 +159,7 @@ def handle_claude_request(payload):
     else:
         raise ValueError("No valid Claude or Sonnet model found in deployment URLs.")
     payload = convert_openai_to_claude(payload)
+    logging.info(f"handle_claude_request: {url}")
     return url, payload
 
 def handle_default_request(payload):
