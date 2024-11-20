@@ -61,7 +61,7 @@ def demo_request_stream():
         "presence_penalty": 0,
         "stream": True,
         "stop": None,
-        "model": "claude-3.5-sonnet"
+        "model": "3.5-sonnet"
         # "model": "gpt-4o"
     }
 
