@@ -32,6 +32,8 @@ normalized_model_deployment_urls = {
     key.replace("anthropic--", ""): value for key, value in model_deployment_urls.items()
 }
 
+
+
 # Load service key
 service_key = load_config(service_key_json)
 
@@ -75,8 +77,7 @@ def convert_openai_to_claude(payload):
     system_message = ""
     messages = payload["messages"]
     if messages and messages[0]["role"] == "system":
-        system_message = messages.pop(0)["content"][0]["text"]
-
+        system_message = messages.pop(0)["content"]
     # Conversion logic from OpenAI to Claude API format
     claude_payload = {
         "anthropic_version": "bedrock-2023-05-31",
@@ -157,6 +158,7 @@ def handle_claude_request(payload):
     else:
         raise ValueError("No valid Claude or Sonnet model found in deployment URLs.")
     payload = convert_openai_to_claude(payload)
+    logging.info(f"handle_claude_request: {url}")
     return url, payload
 
 def handle_default_request(payload):
@@ -225,8 +227,8 @@ def proxy_openai_stream():
     logging.info(f"Extracted model from request payload: {model}")
 
     if not model or model not in normalized_model_deployment_urls:
-        logging.info("Model not found in deployment URLs, falling back to gpt-4o")
-        model = "gpt-4o"
+        logging.info("Model not found in deployment URLs, falling back to 3.5-sonnet")
+        model = "3.5-sonnet"
 
     if is_claude_model(model):
         url, payload = handle_claude_request(payload)
