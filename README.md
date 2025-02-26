@@ -4,6 +4,11 @@ This project establishes a proxy server to interface with SAP AI Core services, 
 
 It is compatible with any application that supports the OpenAI API, so you can use it in other Applications, e.g. [Cursor IDE](https://www.cursor.com/) or [Chitchat](https://github.com/pjq/ChitChat/).
 
+**Important Reminder**: It is crucial to follow the documentation precisely to ensure the successful deployment of the LLM model. Please refer to the official SAP AI Core documentation for detailed instructions and guidelines.
+- https://developers.sap.com/tutorials/ai-core-generative-ai.html
+
+Once the LLM model is deployed, obtain the URL and update it in the config.json file: `deployment_models`.
+
 ## Overview
 `sap-ai-core-llm-proxy` is a Python-based project that includes functionalities for token management, forwarding requests to the SAP AI Core API, and handling responses. The project uses Flask to implement the proxy server.
 
@@ -106,6 +111,23 @@ You can send a demo request to the proxy server using the `proxy_server_demo_req
 ```sh
 python proxy_server_demo_request.py
 ```
+
+## Running the Local Chat Application
+
+To start the local chat application using `chat.py`, use the following command:
+```shell
+python3 chat.py 
+python3 chat.py --model gpt-4o 
+```
+Example
+```shell
+python3 chat.py 
+Starting chat with model: gpt-4o. Type 'exit' to end.
+You: Hello who are you
+Assistant: Hello! I'm an AI language model created by OpenAI. I'm here to help you with a wide range of questions and tasks. How can I assist you today?
+You: 
+```
+
 
 ## Cursor(AI IDE) Integration
 You can run the proxy_server in your public server, then you can update the base_url in the Cursor model settings
