@@ -150,10 +150,32 @@ def convert_claude_chunk_to_openai(chunk):
 def is_claude_model(model):
     return "claude" in model or "sonnet" in model
 
+def load_balance_url(urls, model_key):
+    # Implement a simple round-robin load balancing mechanism
+    if not hasattr(load_balance_url, "counters"):
+        logging.debug("Initializing 'counters' attribute for load balancing.")
+        load_balance_url.counters = {}
+    
+    if model_key not in load_balance_url.counters:
+        logging.debug(f"Initializing counter for model key '{model_key}'.")
+        load_balance_url.counters[model_key] = 0
+    
+    # Ensure the list of URLs is not empty to avoid division by zero
+    if not urls:
+        logging.error(f"No URLs available for model key '{model_key}'.")
+        raise ValueError(f"No URLs available for model key '{model_key}'.")
+
+    index = load_balance_url.counters[model_key] % len(urls)
+    logging.debug(f"Model key '{model_key}' selected index {index}. Counter value: {load_balance_url.counters[model_key]}")
+    load_balance_url.counters[model_key] += 1
+    logging.info(f"load_balance_url for {model_key}: Selected URL: {urls[index]}")
+    return urls[index]
+
 def handle_claude_request(payload):
     for key in normalized_model_deployment_urls:
         if 'claud' in key or 'sonnet' in key:
-            url = f"{normalized_model_deployment_urls[key]}/invoke-with-response-stream"
+            urls = normalized_model_deployment_urls[key]
+            url = f"{load_balance_url(urls, key)}/invoke-with-response-stream"
             break
     else:
         raise ValueError("No valid Claude or Sonnet model found in deployment URLs.")
@@ -161,8 +183,9 @@ def handle_claude_request(payload):
     logging.info(f"handle_claude_request: {url}")
     return url, payload
 
-def handle_default_request(payload):
-    url = f"{normalized_model_deployment_urls['gpt-4o']}/chat/completions?api-version=2023-05-15"
+def handle_default_request(payload, model="gpt-4o"):
+    urls = normalized_model_deployment_urls.get(model, normalized_model_deployment_urls['gpt-4o'])
+    url = f"{load_balance_url(urls, model)}/chat/completions?api-version=2023-05-15"
     return url, payload
 
 @app.route('/v1/chat/completions', methods=['OPTIONS'])
