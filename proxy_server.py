@@ -1,15 +1,37 @@
-import logging  
-from flask import Flask, request, jsonify, Response, stream_with_context  
+import logging
+from flask import Flask, request, jsonify, Response, stream_with_context
 import requests
 import time
 import threading
 import json
 import base64
+import random
+import os
+from datetime import datetime
 
 app = Flask(__name__)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# Create a new logger for token usage
+token_logger = logging.getLogger('token_usage')
+token_logger.setLevel(logging.INFO)
+
+# Create a file handler for token usage logging
+log_directory = 'logs'
+if not os.path.exists(log_directory):
+    os.makedirs(log_directory)
+log_file = os.path.join(log_directory, 'token_usage.log')
+file_handler = logging.FileHandler(log_file)
+file_handler.setLevel(logging.INFO)
+
+# Create a formatter for token usage logging
+formatter = logging.Formatter('%(asctime)s - %(message)s')
+file_handler.setFormatter(formatter)
+
+# Add the file handler to the token usage logger
+token_logger.addHandler(file_handler)
 
 # Global variables for token management
 token = None
@@ -31,8 +53,6 @@ resource_group = config['resource_group']
 normalized_model_deployment_urls = {
     key.replace("anthropic--", ""): value for key, value in model_deployment_urls.items()
 }
-
-
 
 # Load service key
 service_key = load_config(service_key_json)
@@ -268,6 +288,7 @@ def proxy_openai_stream():
 
     def generate():
         buffer = ""
+        total_tokens = 0
         with requests.post(url, headers=headers, json=payload, stream=True) as response:
             try:
                 response.raise_for_status()
@@ -283,11 +304,39 @@ def proxy_openai_stream():
                                     buffer = buffer[end + 2:]
                                     json_chunk = convert_claude_chunk_to_openai(json_chunk)
                                     yield json_chunk.encode('utf-8')
+                                    
+                                    # Count tokens in the chunk
+                                    # chunk_data = json.loads(json_chunk.replace("", ""))
+                                    # if "choices" in chunk_data and chunk_data["choices"]:
+                                    #     if "delta" in chunk_data["choices"][0] and "content" in chunk_data["choices"][0]["delta"]:
+                                    #         total_tokens += len(chunk_data["choices"][0]["delta"]["content"].split())
                                 except ValueError:
                                     break
                         else:
                             yield chunk
+                            # Log the chunk content for debugging purposes
+                            logging.info(f"Chunk received: {chunk.decode('utf-8')}")
+                            
+                            # Count tokens in the chunk for non-Claude models
+                            # try:
+                            #     chunk_data = json.loads(chunk.decode('utf-8'))
+                            #     if "choices" in chunk_data and chunk_data["choices"]:
+                            #         if "delta" in chunk_data["choices"][0] and "content" in chunk_data["choices"][0]["delta"]:
+                            #             total_tokens += len(chunk_data["choices"][0]["delta"]["content"].split())
+                            # except json.JSONDecodeError:
+                            #     pass
+                        
                         time.sleep(0.01)  # Small sleep to avoid overwhelming the client
+                
+                # Log token usage
+                user_id = request.headers.get("Authorization", "unknown")
+                max_user_id_length = 30
+                if len(user_id) < max_user_id_length:
+                    user_id = user_id.ljust(max_user_id_length, '_')
+                else:
+                    user_id = user_id[:max_user_id_length]
+                token_logger.info(f"User: {user_id}, Model: {model}, Tokens: {total_tokens}")
+                
                 logging.info("Request to actual API succeeded.")
             except requests.exceptions.HTTPError as err:
                 logging.error(f"HTTP error occurred while forwarding request: {err}")
