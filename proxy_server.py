@@ -335,7 +335,8 @@ def proxy_openai_stream():
                     user_id = user_id.ljust(max_user_id_length, '_')
                 else:
                     user_id = user_id[:max_user_id_length]
-                token_logger.info(f"User: {user_id}, Model: {model}, Tokens: {total_tokens}")
+                ip_address = request.remote_addr
+                token_logger.info(f"User: {user_id}, IP: {ip_address}, Model: {model}, Tokens: {total_tokens}")
                 
                 logging.info("Request to actual API succeeded.")
             except requests.exceptions.HTTPError as err:
