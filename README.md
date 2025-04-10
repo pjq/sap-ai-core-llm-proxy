@@ -95,7 +95,7 @@ Start the proxy server using the following command:
 ```sh
 python proxy_server.py
 ```
-The server will run on `http://127.0.0.1:5000`.
+The server will run on `http://127.0.0.1:3001`.
 
 ### Running the Proxy Server over HTTPS
 To run the proxy server over HTTPS, you need to generate SSL certificates. You can use the following command to generate a self-signed certificate and key:

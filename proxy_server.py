@@ -284,7 +284,7 @@ def proxy_openai_stream():
         "Authorization": f"Bearer {token}"
     }
 
-    logging.info(f"Forwarding request to {url} with payload: {payload}")
+    logging.info(f"Forwarding request to {url} with payload:\n {json.dumps(payload, indent=4)}")
 
     def generate():
         buffer = ""
@@ -350,4 +350,4 @@ def proxy_openai_stream():
 
 if __name__ == '__main__':
     logging.info("Starting proxy server...")
-    app.run(host='127.0.0.1', port=5000, debug=True)
+    app.run(host='127.0.0.1', port=3001, debug=True)
