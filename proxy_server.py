@@ -324,6 +324,8 @@ def proxy_openai_stream():
                                     total_tokens += int(match.group(1))
                             except json.JSONDecodeError:
                                 pass
+                            except Exception as e:
+                                logging.error(f"An unexpected error occurred while decoding JSON: {e}")
                         
                         time.sleep(0.01)  # Small sleep to avoid overwhelming the client
                 
