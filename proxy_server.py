@@ -311,7 +311,7 @@ def proxy_openai_stream():
                         else:
                             yield chunk
                             # Log the chunk content for debugging purposes
-                            logging.info(f"Chunk received: {chunk.decode('utf-8')}")
+                            # logging.info(f"Chunk received: {chunk.decode('utf-8')}")
                             
                             # Count tokens in the chunk for non-Claude models
                             import re
