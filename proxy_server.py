@@ -8,6 +8,8 @@ import base64
 import random
 import os
 from datetime import datetime
+import argparse
+
 
 app = Flask(__name__)
 
@@ -43,19 +45,10 @@ def load_config(file_path):
         config = json.load(file)
     return config
 
-# Load configuration
-config = load_config('config.json')
-service_key_json = config['service_key_json']
-model_deployment_urls = config['deployment_models']
-secret_authentication_tokens = config['secret_authentication_tokens']
-resource_group = config['resource_group']
-# Normalize model_deployment_urls keys
-normalized_model_deployment_urls = {
-    key.replace("anthropic--", ""): value for key, value in model_deployment_urls.items()
-}
-
-# Load service key
-service_key = load_config(service_key_json)
+def parse_arguments():
+    parser = argparse.ArgumentParser(description="Proxy server for AI models")
+    parser.add_argument("--config", type=str, default="config.json", help="Path to the configuration file")
+    return parser.parse_args()
 
 def fetch_token():
     global token, token_expiry
@@ -348,6 +341,28 @@ def proxy_openai_stream():
 
     return Response(stream_with_context(generate()), content_type=content_type)
 
+
 if __name__ == '__main__':
-    logging.info("Starting proxy server...")
-    app.run(host='127.0.0.1', port=3001, debug=True)
+    args = parse_arguments()
+    logging.info(f"Loading configuration from: {args.config}")
+    config = load_config(args.config)
+    
+    # Update these variables with the new config
+    service_key_json = config['service_key_json']
+    model_deployment_urls = config['deployment_models']
+    secret_authentication_tokens = config['secret_authentication_tokens']
+    resource_group = config['resource_group']
+    
+    # Normalize model_deployment_urls keys
+    normalized_model_deployment_urls = {
+        key.replace("anthropic--", ""): value for key, value in model_deployment_urls.items()
+    }
+
+    # Load service key
+    service_key = load_config(service_key_json)
+
+    port = config.get('port', 3001)  # Use port from config, default to 3001 if not specified
+
+    logging.info(f"Starting proxy server on port {port}...")
+    logging.info(f"API Host: http://127.0.0.1:{port}/v1")
+    app.run(host='127.0.0.1', port=port, debug=False)

@@ -9,6 +9,15 @@ It is compatible with any application that supports the OpenAI API, so you can u
 
 Once the LLM model is deployed, obtain the URL and update it in the config.json file: `deployment_models`.
 
+## Quick Start
+```shell
+python proxy_server.py --config config.json
+```
+After you run the proxy server, you will get
+- API BaseUrl: http://127.0.0.1:3001/v1
+- API key will be one of secret_authentication_tokens. 
+- Model ID: models you configured in the `deployment_models`
+
 ## Overview
 `sap-ai-core-llm-proxy` is a Python-based project that includes functionalities for token management, forwarding requests to the SAP AI Core API, and handling responses. The project uses Flask to implement the proxy server.
 
@@ -19,6 +28,7 @@ Now it support the following LLM models
 ## Features
 - **Token Management**: Fetch and cache tokens for authentication.
 - **Proxy Server**: Forward requests to the AI API with token management.
+- **Load Balance**: Support the simple Load Balance.
 - **Model Management**: List available models and handle model-specific requests.
 
 ## Prerequisites
@@ -138,9 +148,21 @@ Assistant: Hello! I'm an AI language model created by OpenAI. I'm here to help y
 You: 
 ```
 
-
 ## Cursor(AI IDE) Integration
 You can run the proxy_server in your public server, then you can update the base_url in the Cursor model settings
+
+## CLINE Integration
+Choose the API Provider -> OpenAI API Compatible
+- Base URL: http://127.0.0.1:3001/v1
+- API key: will be one of secret_authentication_tokens. 
+- Model ID: models you configured in the `deployment_models`
+
+## Cherry Studio Integration
+Add Provider->Provider Type -> OpenAI
+
+- API Key: will be one of secret_authentication_tokens. 
+- API Host: http://127.0.0.1:3001
+- Add Models: models you configured in the `deployment_models` 
 
 ### Claude Integration
 It seems the IDE will block the request if the model contains claude, so we need to rename it to the name don't contains claude
