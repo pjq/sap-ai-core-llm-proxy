@@ -198,7 +198,10 @@ def handle_claude_request(payload):
 
 def handle_default_request(payload, model="gpt-4o"):
     urls = normalized_model_deployment_urls.get(model, normalized_model_deployment_urls['gpt-4o'])
-    url = f"{load_balance_url(urls, model)}/chat/completions?api-version=2023-05-15"
+    if "o3-mini" in model:
+        url = f"{load_balance_url(urls, model)}/chat/completions?api-version=2024-12-01-preview"
+    else:
+        url = f"{load_balance_url(urls, model)}/chat/completions?api-version=2023-05-15"
     return url, payload
 
 @app.route('/v1/chat/completions', methods=['OPTIONS'])
@@ -245,7 +248,7 @@ def list_models():
     return jsonify({"object": "list", "data": models}), 200
 
 content_type="Application/json"
-@app.route('/v1/chat/completions', methods=['POST'])
+@app.route('/v1/chat/completions', methods=['POST', 'OPTIONS'])
 def proxy_openai_stream():
     logging.info("Received request to /v1/chat/completions")
     logging.info(f"Request headers: {request.headers}")
@@ -264,12 +267,12 @@ def proxy_openai_stream():
 
     if not model or model not in normalized_model_deployment_urls:
         logging.info("Model not found in deployment URLs, falling back to 3.5-sonnet")
-        model = "3.5-sonnet"
+        model = "gpt-4o"
 
     if is_claude_model(model):
         url, payload = handle_claude_request(payload)
     else:
-        url, payload = handle_default_request(payload)
+        url, payload = handle_default_request(payload, model)
 
     headers = {
         "AI-Resource-Group": resource_group,
@@ -308,16 +311,19 @@ def proxy_openai_stream():
                         else:
                             yield chunk
                             # Log the chunk content for debugging purposes
-                            logging.debug(f"Chunk received: {chunk.decode('utf-8')}")
+                            logging.info(f"Chunk received: {chunk.decode('utf-8')}")
                             
                             # Count tokens in the chunk for non-Claude models
-                            # try:
-                            #     chunk_data = json.loads(chunk.decode('utf-8'))
-                            #     if "choices" in chunk_data and chunk_data["choices"]:
-                            #         if "delta" in chunk_data["choices"][0] and "content" in chunk_data["choices"][0]["delta"]:
-                            #             total_tokens += len(chunk_data["choices"][0]["delta"]["content"].split())
-                            # except json.JSONDecodeError:
-                            #     pass
+                            import re
+
+                            try:
+                                chunk_text = chunk.decode('utf-8')
+                                # Use regex to find the total_tokens value in the chunk
+                                match = re.search(r'"total_tokens":(\d+)', chunk_text)
+                                if match:
+                                    total_tokens += int(match.group(1))
+                            except json.JSONDecodeError:
+                                pass
                         
                         time.sleep(0.01)  # Small sleep to avoid overwhelming the client
                 
@@ -361,8 +367,9 @@ if __name__ == '__main__':
     # Load service key
     service_key = load_config(service_key_json)
 
+    host = config.get('host', '127.0.0.1')  # Use host from config, default to 127.0.0.1 if not specified
     port = config.get('port', 3001)  # Use port from config, default to 3001 if not specified
 
-    logging.info(f"Starting proxy server on port {port}...")
-    logging.info(f"API Host: http://127.0.0.1:{port}/v1")
-    app.run(host='127.0.0.1', port=port, debug=False)
+    logging.info(f"Starting proxy server on host {host} and port {port}...")
+    logging.info(f"API Host: http://{host}:{port}/v1")
+    app.run(host=host, port=port, debug=True)

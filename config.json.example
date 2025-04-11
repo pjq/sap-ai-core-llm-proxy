@@ -17,5 +17,6 @@
     },
     "secret_authentication_tokens": ["<hidden_key_1>", "<hidden_key_2>", "<hidden_key_3>", "<hidden_key_4>"],
     "resource_group": "default",
-    "port": 3001
+    "port": 3001,
+    "host": "127.0.0.1"
 }
