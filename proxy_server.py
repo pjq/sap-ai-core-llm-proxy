@@ -94,9 +94,13 @@ def convert_openai_to_claude(payload):
     # Conversion logic from OpenAI to Claude API format
     claude_payload = {
         "anthropic_version": "bedrock-2023-05-31",
-        "max_tokens": payload.get("max_tokens", 4096),
+        "max_tokens": payload.get("max_tokens", 4096000),
         "system": system_message,
-        "messages": messages
+        "messages": messages,
+        # "thinking": {
+        #     "type": "enabled",
+        #     "budget_tokens": 16000
+        # },
     }
     return claude_payload
 
@@ -165,6 +169,7 @@ def is_claude_model(model):
 
 def load_balance_url(urls, model_key):
     # Implement a simple round-robin load balancing mechanism
+    logging.debug(f"load_balance_url called with model_key: {model_key} and urls: {urls}")
     if not hasattr(load_balance_url, "counters"):
         logging.debug("Initializing 'counters' attribute for load balancing.")
         load_balance_url.counters = {}
@@ -184,11 +189,19 @@ def load_balance_url(urls, model_key):
     logging.info(f"load_balance_url for {model_key}: Selected URL: {urls[index]}")
     return urls[index]
 
-def handle_claude_request(payload):
+def handle_claude_request(payload, model="3.5-sonnet"):
+    stream = payload.get("stream", True)  # Default to True if 'stream' is not provided
+    # stream = False
+    logging.info(f"handle_claude_request: model={model} stream={stream}")
     for key in normalized_model_deployment_urls:
-        if 'claud' in key or 'sonnet' in key:
+        # logging.info(f"handle_claude_request: key={key}")
+        # if 'claud' in key or 'sonnet' in key:
+        if model == key:
             urls = normalized_model_deployment_urls[key]
-            url = f"{load_balance_url(urls, key)}/invoke-with-response-stream"
+            if stream:
+                url = f"{load_balance_url(urls, key)}/invoke-with-response-stream"
+            else:
+                url = f"{load_balance_url(urls, key)}/invoke"
             break
     else:
         raise ValueError("No valid Claude or Sonnet model found in deployment URLs.")
@@ -208,7 +221,7 @@ def handle_default_request(payload, model="gpt-4o"):
 def proxy_openai_stream2():
     logging.info("OPTIONS:Received request to /v1/chat/completions")
     logging.info(f"Request headers: {request.headers}")
-    logging.info(f"Request body: {request.get_json()}")
+    logging.info(f"Request body:\n {json.dumps(request.get_json(), indent=4)}")
     return jsonify({
         "choices": [
             {
@@ -252,7 +265,7 @@ content_type="Application/json"
 def proxy_openai_stream():
     logging.info("Received request to /v1/chat/completions")
     logging.info(f"Request headers: {request.headers}")
-    logging.info(f"Request body: {request.get_json()}")
+    logging.info(f"Request body:\n{json.dumps(request.get_json(), indent=4)}")
     if not verify_request_token(request):
         logging.info("Unauthorized request received. Token verification failed.")
         return jsonify({"error": "Unauthorized"}), 401
@@ -270,7 +283,7 @@ def proxy_openai_stream():
         model = "gpt-4o"
 
     if is_claude_model(model):
-        url, payload = handle_claude_request(payload)
+        url, payload = handle_claude_request(payload, model)
     else:
         url, payload = handle_default_request(payload, model)
 
@@ -342,6 +355,8 @@ def proxy_openai_stream():
                 logging.info("Request to actual API succeeded.")
             except requests.exceptions.HTTPError as err:
                 logging.error(f"HTTP error occurred while forwarding request: {err}")
+                if err.response is not None:
+                    logging.error(f"Error response content: {err.response.text}")
                 raise
             except Exception as err:
                 logging.error(f"An error occurred while forwarding request: {err}")
