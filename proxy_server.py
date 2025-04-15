@@ -327,6 +327,15 @@ def proxy_openai_stream():
             if is_claude_model(model):
                 final_response = jsonify(convert_claude_to_openai(response.json()))
             logging.info(f"Final response sent to client: {json.dumps(response.json(), indent=4)}")
+            user_id = request.headers.get("Authorization", "unknown")
+            max_user_id_length = 30
+            if len(user_id) < max_user_id_length:
+                user_id = user_id.ljust(max_user_id_length, '_')
+            else:
+                user_id = user_id[:max_user_id_length]
+            ip_address = request.remote_addr
+            total_tokens = response.json().get("usage", {}).get("total_tokens", 0)
+            token_logger.info(f"User: {user_id}, IP: {ip_address}, Model: {model}, Tokens: {total_tokens}")
             return final_response, response.status_code
         except requests.exceptions.HTTPError as err:
             logging.error(f"HTTP error occurred while forwarding request: {err}")
