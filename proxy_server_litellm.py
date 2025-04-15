@@ -410,5 +410,6 @@ if __name__ == '__main__':
     logging.info(f"Proxy configured for SAP AI Core models: {list(aicore_deployment_urls.keys())}")
     # --- Start Server ---
     logging.info(f"Starting Server on http://{host}:{port}")
-    try: from waitress import serve; logging.info("Using Waitress."); serve(app, host=host, port=port, threads=10)
-    except ImportError: logging.warning("Waitress not found. Using Flask dev server."); app.run(host=host, port=port, debug=False)
+    # try: from waitress import serve; logging.info("Using Waitress."); serve(app, host=host, port=port, threads=10)
+    # except ImportError: logging.warning("Waitress not found. Using Flask dev server."); 
+    app.run(host=host, port=port, debug=False)

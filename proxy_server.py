@@ -9,6 +9,7 @@ import random
 import os
 from datetime import datetime
 import argparse
+import re
 
 
 app = Flask(__name__)
@@ -105,29 +106,47 @@ def convert_openai_to_claude(payload):
     return claude_payload
 
 def convert_claude_to_openai(response):
-    # Conversion logic from Claude API to OpenAI format
-    openai_response = {
-        "choices": [
-            {
-                "finish_reason": "stop",
-                "index": 0,
-                "message": {
-                    "content": response["choices"][0]["message"]["content"],
-                    "role": "assistant"
+    try:
+        logging.debug(f"Raw response from Claude API: {json.dumps(response, indent=4)}")
+
+        # Ensure the response contains the expected structure
+        if "content" not in response or not isinstance(response["content"], list):
+            raise ValueError("Invalid response structure: 'content' is missing or not a list")
+
+        first_content = response["content"][0]
+        if not isinstance(first_content, dict) or "text" not in first_content:
+            raise ValueError("Invalid response structure: 'content[0].text' is missing")
+
+        # Conversion logic from Claude API to OpenAI format
+        openai_response = {
+            "choices": [
+                {
+                    "finish_reason": response.get("stop_reason", "stop"),
+                    "index": 0,
+                    "message": {
+                        "content": first_content["text"],
+                        "role": response.get("role", "assistant")
+                    }
                 }
+            ],
+            "created": int(time.time()),
+            "id": response.get("id", "chatcmpl-unknown"),
+            "model": response.get("model", "claude-v1"),
+            "object": "chat.completion",
+            "usage": {
+                "completion_tokens": response.get("usage", {}).get("output_tokens", 0),
+                "prompt_tokens": response.get("usage", {}).get("input_tokens", 0),
+                "total_tokens": response.get("usage", {}).get("input_tokens", 0) + response.get("usage", {}).get("output_tokens", 0)
             }
-        ],
-        "created": int(time.time()),
-        "id": response.get("id", "chatcmpl-unknown"),
-        "model": "claude-v1",
-        "object": "chat.completion",
-        "usage": {
-            "completion_tokens": response.get("usage", {}).get("completion_tokens", 0),
-            "prompt_tokens": response.get("usage", {}).get("prompt_tokens", 0),
-            "total_tokens": response.get("usage", {}).get("total_tokens", 0)
         }
-    }
-    return openai_response
+        logging.debug(f"Converted response to OpenAI format: {json.dumps(openai_response, indent=4)}")
+        return openai_response
+    except Exception as e:
+        logging.error(f"Error converting Claude response to OpenAI format: {e}")
+        return {
+            "error": "Invalid response from Claude API",
+            "details": str(e)
+        }
 
 def convert_claude_chunk_to_openai(chunk):
     try:
@@ -276,6 +295,7 @@ def proxy_openai_stream():
     # Extract model from the request payload
     payload = request.json
     model = payload.get("model")
+    isStream = payload.get("stream", True)
     logging.info(f"Extracted model from request payload: {model}")
 
     if not model or model not in normalized_model_deployment_urls:
@@ -295,6 +315,29 @@ def proxy_openai_stream():
 
     logging.info(f"Forwarding request to {url} with payload:\n {json.dumps(payload, indent=4)}")
 
+    # Check if streaming is disabled
+    if not isStream:  # Use the isStream variable directly
+        try:
+            response = requests.post(url, headers=headers, json=payload)
+            response.raise_for_status()
+            logging.info("Request to actual API succeeded (non-streaming).")
+            
+            # Log the final response before returning it
+            final_response = jsonify(response.json())
+            if is_claude_model(model):
+                final_response = jsonify(convert_claude_to_openai(response.json()))
+            logging.info(f"Final response sent to client: {json.dumps(response.json(), indent=4)}")
+            return final_response, response.status_code
+        except requests.exceptions.HTTPError as err:
+            logging.error(f"HTTP error occurred while forwarding request: {err}")
+            if err.response is not None:
+                logging.error(f"Error response content: {err.response.text}")
+                return jsonify({"error": err.response.text}), err.response.status_code
+        except Exception as err:
+            logging.error(f"An error occurred while forwarding request: {err}")
+            return jsonify({"error": "Internal server error"}), 500
+
+    # Streaming logic
     def generate():
         buffer = ""
         total_tokens = 0
@@ -313,36 +356,18 @@ def proxy_openai_stream():
                                     buffer = buffer[end + 2:]
                                     json_chunk = convert_claude_chunk_to_openai(json_chunk)
                                     yield json_chunk.encode('utf-8')
-                                    
-                                    # Count tokens in the chunk
-                                    # chunk_data = json.loads(json_chunk.replace("", ""))
-                                    # if "choices" in chunk_data and chunk_data["choices"]:
-                                    #     if "delta" in chunk_data["choices"][0] and "content" in chunk_data["choices"][0]["delta"]:
-                                    #         total_tokens += len(chunk_data["choices"][0]["delta"]["content"].split())
                                 except ValueError:
                                     break
                         else:
                             yield chunk
-                            # Log the chunk content for debugging purposes
-                            # logging.info(f"Chunk received: {chunk.decode('utf-8')}")
-                            
-                            # Count tokens in the chunk for non-Claude models
-                            import re
-
                             try:
                                 chunk_text = chunk.decode('utf-8')
-                                # Use regex to find the total_tokens value in the chunk
                                 match = re.search(r'"total_tokens":(\d+)', chunk_text)
                                 if match:
                                     total_tokens += int(match.group(1))
-                            except json.JSONDecodeError:
-                                pass
                             except Exception as e:
                                 logging.error(f"An unexpected error occurred while decoding JSON: {e}")
-                        
-                        time.sleep(0.01)  # Small sleep to avoid overwhelming the client
-                
-                # Log token usage
+                        time.sleep(0.01)
                 user_id = request.headers.get("Authorization", "unknown")
                 max_user_id_length = 30
                 if len(user_id) < max_user_id_length:
@@ -351,7 +376,6 @@ def proxy_openai_stream():
                     user_id = user_id[:max_user_id_length]
                 ip_address = request.remote_addr
                 token_logger.info(f"User: {user_id}, IP: {ip_address}, Model: {model}, Tokens: {total_tokens}")
-                
                 logging.info("Request to actual API succeeded.")
             except requests.exceptions.HTTPError as err:
                 logging.error(f"HTTP error occurred while forwarding request: {err}")
