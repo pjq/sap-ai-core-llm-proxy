@@ -717,79 +717,132 @@ def proxy_openai_stream():
     def generate():
         buffer = ""
         total_tokens = 0
+        claude_metadata = {} # Initialize outside the loop for 3.7 case
+
         with requests.post(url, headers=headers, json=payload, stream=True) as response:
             try:
                 response.raise_for_status()
-                for chunk in response.iter_content(chunk_size=128):  # Reduced chunk size
-                    if chunk:
-                        if is_claude_model(model):
-                             # --- Claude 3.7 Streaming Logic (Newline Delimited JSON) ---
-                            if "3.7" in model:
-                                logging.info("Using Claude 3.7 /converse-stream parsing logic.")
-                                for line_bytes in response.iter_lines():
-                                    if line_bytes:
-                                        line = line_bytes.decode('utf-8')
-                                        # logging.info(f"Received line from Claude 3.7 stream: {line}")
-                                        line = line.replace("data: ", "").strip()
-                                        import ast
-                                        python_dict = ast.literal_eval(line)
-                                        line_dump = json.dumps(python_dict)
-                                        logging.info(f"convert to the line: {line_dump}")
-                                        # line= line.replace("'", "\"").strip()
 
-                                        # logging.info(f"Received line from Claude 3.7 stream: {line}")
-                                        try:
-                                            # *** PARSE JSON LINE HERE ***
-                                            claude_dict_chunk = json.loads(line_dump)
-                                            chunk_type = claude_dict_chunk.get("type")
+                # --- Claude 3.7 Streaming Logic (Newline Delimited JSON) ---
+                if is_claude_model(model) and "3.7" in model:
+                    logging.info("Using Claude 3.7 /converse-stream parsing logic.")
+                    # Directly iterate over lines for Claude 3.7, bypassing iter_content
+                    for line_bytes in response.iter_lines():
+                        if line_bytes:
+                            line = line_bytes.decode('utf-8')
+                            # logging.info(f"Received line from Claude 3.7 stream: {line}")
+                            if line.startswith("data: "):
+                                line_content = line.replace("data: ", "").strip()
+                                import ast
+                                line_content = ast.literal_eval(line_content)
+                                line_content = json.dumps(line_content)
+                                try:
+                                    # *** PARSE JSON LINE HERE ***
+                                    # Use json.loads directly if the line is valid JSON
+                                    claude_dict_chunk = json.loads(line_content)
+                                    chunk_type = claude_dict_chunk.get("type")
 
-                                            if chunk_type == "metadata":
-                                                claude_metadata = claude_dict_chunk.get("metadata", {})
-                                                logging.info(f"Received Claude 3.7 metadata: {claude_metadata}")
-                                                continue # Don't yield metadata, just store it
+                                    if chunk_type == "metadata":
+                                        claude_metadata = claude_dict_chunk.get("metadata", {})
+                                        logging.info(f"Received Claude 3.7 metadata: {claude_metadata}")
+                                        continue # Don't yield metadata, just store it
 
-                                            # *** PASS PARSED DICTIONARY ***
-                                            openai_sse_chunk_str = convert_claude37_chunk_to_openai(claude_dict_chunk, model)
+                                    # *** PASS PARSED DICTIONARY ***
+                                    openai_sse_chunk_str = convert_claude37_chunk_to_openai(claude_dict_chunk, model)
 
-                                            if openai_sse_chunk_str:
-                                                yield openai_sse_chunk_str # Yield the already formatted SSE string
-                                            else:
-                                                logging.debug(f"Ignoring non-yieldable Claude chunk type: {chunk_type}")
+                                    if openai_sse_chunk_str:
+                                        yield openai_sse_chunk_str # Yield the already formatted SSE string
+                                    else:
+                                        logging.debug(f"Ignoring non-yieldable Claude chunk type: {chunk_type}")
 
-                                        except json.JSONDecodeError:
-                                            logging.warning(f"Could not decode JSON from Claude 3.7 line: {line_dump}")
-                                        except Exception as e:
-                                            logging.error(f"Error processing Claude 3.7 line '{line_dump}': {e}", exc_info=True)
-                                            # Optionally yield an error chunk
-                                            error_payload = {"id": f"chatcmpl-error-{random.randint(10000, 99999)}", "object": "chat.completion.chunk", "created": int(time.time()), "model": model, "choices": [{"index": 0, "delta": {"content": f"[PROXY ERROR: Failed to process upstream line - {str(e)}]"}, "finish_reason": "stop"}]}
-                                            yield f"data: {json.dumps(error_payload)}\n\n"
+                                except json.JSONDecodeError:
+                                    logging.warning(f"Could not decode JSON from Claude 3.7 line: {line_content}")
+                                except Exception as e:
+                                    logging.error(f"Error processing Claude 3.7 line '{line_content}': {e}", exc_info=True)
+                                    # Optionally yield an error chunk
+                                    error_payload = {"id": f"chatcmpl-error-{random.randint(10000, 99999)}", "object": "chat.completion.chunk", "created": int(time.time()), "model": model, "choices": [{"index": 0, "delta": {"content": f"[PROXY ERROR: Failed to process upstream line - {str(e)}]"}, "finish_reason": "stop"}]}
+                                    yield f"data: {json.dumps(error_payload)}\n\n"
+                            else:
+                                logging.warning(f"Received unexpected line format from Claude 3.7 stream: {line}")
+                    # Extract usage from metadata after stream for 3.7
+                    if claude_metadata and isinstance(claude_metadata.get("usage"), dict):
+                        total_tokens = claude_metadata["usage"].get("totalTokens", 0)
 
-                                # Extract usage from metadata after stream
-                                if claude_metadata and isinstance(claude_metadata.get("usage"), dict):
-                                    total_tokens = claude_metadata["usage"].get("totalTokens", 0)
-                            else :
+                # --- Logic for other models (including older Claude) ---
+                else:
+                    for chunk in response.iter_content(chunk_size=128):  # Reduced chunk size
+                        if chunk:
+                            if is_claude_model(model): # Older Claude versions
                                 buffer += chunk.decode('utf-8')
                                 while "data: " in buffer:
                                     try:
                                         start = buffer.index("data: ") + len("data: ")
                                         end = buffer.index("\n\n", start)
-                                        json_chunk = buffer[start:end].strip()
-                                        buffer = buffer[end + 2:]
-                                        json_chunk = convert_claude_chunk_to_openai(json_chunk, model)
-                                        logging.info(f"Processed Claude chunk (OpenAI format): {json_chunk}")
-                                        yield json_chunk.encode('utf-8')
+                                        json_chunk_str = buffer[start:end].strip()
+                                        buffer = buffer[end + 2:] # Move buffer past the processed chunk
+
+                                        # Convert the Claude chunk string to OpenAI SSE format string
+                                        openai_sse_chunk_str = convert_claude_chunk_to_openai(json_chunk_str, model)
+
+                                        # Log and yield the OpenAI formatted chunk
+                                        logging.info(f"Processed Claude chunk (OpenAI format): {openai_sse_chunk_str.strip()}")
+                                        yield openai_sse_chunk_str.encode('utf-8')
+
+                                        # Attempt to parse usage from the original Claude chunk for logging
+                                        try:
+                                            claude_chunk_data = json.loads(json_chunk_str)
+                                            # Note: Older Claude streaming might not reliably send usage per chunk.
+                                            # This part might need adjustment based on actual API behavior.
+                                            # If usage is only at the end, this won't capture it correctly.
+                                            # Consider logging tokens based on the final non-streaming response if possible,
+                                            # or accept that streaming token count might be inaccurate for older Claude.
+                                            pass # Placeholder - token counting for older Claude stream is complex
+                                        except json.JSONDecodeError:
+                                            logging.warning(f"Could not parse original Claude chunk for token counting: {json_chunk_str}")
+
                                     except ValueError:
+                                        # Not enough data in buffer for a full "data: ...\n\n" block, wait for more chunks
                                         break
-                        else:
-                            yield chunk
-                            try:
-                                chunk_text = chunk.decode('utf-8')
-                                match = re.search(r'"total_tokens":(\d+)', chunk_text)
-                                if match:
-                                    total_tokens += int(match.group(1))
-                            except Exception as e:
-                                logging.error(f"An unexpected error occurred while decoding JSON: {e}")
-                        time.sleep(0.01)
+                                    except Exception as e:
+                                        logging.error(f"Error processing older Claude chunk: {e}", exc_info=True)
+                                        # Optionally yield an error chunk
+                                        error_payload = {"id": f"chatcmpl-error-{random.randint(10000, 99999)}", "object": "chat.completion.chunk", "created": int(time.time()), "model": model, "choices": [{"index": 0, "delta": {"content": f"[PROXY ERROR: Failed to process upstream chunk - {str(e)}]"}, "finish_reason": "stop"}]}
+                                        yield f"data: {json.dumps(error_payload)}\n\n"
+                                        break # Stop processing this buffer part on error
+
+                            else: # Default OpenAI-like models
+                                yield chunk
+                                try:
+                                    # Attempt to parse total_tokens from OpenAI chunks (might be in the last chunk)
+                                    chunk_text = chunk.decode('utf-8')
+                                    # Look for the final chunk structure containing usage
+                                    if '"finish_reason":' in chunk_text: # Heuristic for final chunk
+                                        sse_lines = chunk_text.strip().split('\n')
+                                        for sse_line in sse_lines:
+                                            if sse_line.startswith("data: "):
+                                                data_content = sse_line[len("data: "):].strip()
+                                                if data_content.upper() == "[DONE]":
+                                                    continue
+                                                try:
+                                                    data_json = json.loads(data_content)
+                                                    usage = data_json.get("usage")
+                                                    if usage and isinstance(usage, dict):
+                                                         # OpenAI API usually sends usage only in non-streaming or maybe final chunk
+                                                         # This might not capture tokens correctly during streaming.
+                                                         # Consider alternative token counting methods if needed.
+                                                         chunk_total_tokens = usage.get("total_tokens")
+                                                         if chunk_total_tokens is not None:
+                                                             total_tokens = chunk_total_tokens # Assume last chunk has final count
+                                                             logging.info(f"Captured total_tokens from final OpenAI chunk: {total_tokens}")
+                                                except json.JSONDecodeError:
+                                                    logging.warning(f"Could not decode JSON from potential final OpenAI chunk line: {data_content}")
+                                except UnicodeDecodeError:
+                                    logging.warning("Could not decode chunk as UTF-8 for token parsing.")
+                                except Exception as e:
+                                    logging.error(f"An unexpected error occurred while parsing OpenAI chunk for tokens: {e}")
+                            time.sleep(0.01) # Small delay remains
+
+                # Common logging after the stream finishes for all models
                 user_id = request.headers.get("Authorization", "unknown")
                 max_user_id_length = 30
                 if len(user_id) < max_user_id_length:
@@ -797,19 +850,25 @@ def proxy_openai_stream():
                 else:
                     user_id = user_id[:max_user_id_length]
                 ip_address = request.remote_addr
-                token_logger.info(f"User: {user_id}, IP: {ip_address}, Model: {model}, Tokens: {total_tokens}")
-                logging.info("Request to actual API succeeded.")
+                # Log the total_tokens accumulated (might be 0 if not captured correctly during stream)
+                token_logger.info(f"User: {user_id}, IP: {ip_address}, Model: {model}, Tokens: {total_tokens} (Streaming)")
+                logging.info("Request to actual API succeeded (Streaming).")
+
             except requests.exceptions.HTTPError as err:
                 logging.error(f"HTTP error occurred while forwarding request: {err}")
                 if err.response is not None:
                     logging.error(f"Error response content: {err.response.text}")
-                raise
+                # Don't yield here, let the exception propagate to Flask/Werkzeug
+                # which will handle the already sent headers situation.
+                # yield f"data: {json.dumps({'error': 'Upstream HTTP error', 'status': err.response.status_code, 'details': err.response.text})}\n\n".encode('utf-8')
+                raise # Re-raise the exception
             except Exception as err:
-                logging.error(f"An error occurred while forwarding request: {err}")
-                raise
+                logging.error(f"An error occurred while forwarding request: {err}", exc_info=True)
+                # Don't yield here, let the exception propagate.
+                # yield f"data: {json.dumps({'error': 'Internal proxy error', 'details': str(err)})}\n\n".encode('utf-8')
+                raise # Re-raise the exception
 
-    return Response(stream_with_context(generate()), content_type=content_type)
-
+    return Response(stream_with_context(generate()), content_type='text/event-stream') # Use text/event-stream for SSE
 
 if __name__ == '__main__':
     args = parse_arguments()
