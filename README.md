@@ -23,7 +23,7 @@ After you run the proxy server, you will get
 
 Now it support the following LLM models
 - OpenAI: gpt-4o, gpt-o3-mini
-- Claude: 3.5-sonnet, 3.7-sonnet (3.7-sonnect ONLY support stream=false)
+- Claude: 3.5-sonnet, 3.7-sonnet 
 
 ## Features
 - **Token Management**: Fetch and cache tokens for authentication.
