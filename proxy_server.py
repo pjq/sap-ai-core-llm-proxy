@@ -251,95 +251,135 @@ def convert_claude_to_openai(response, model):
 
 def convert_claude37_to_openai(response, model_name="claude-3.7"):
     """
-    Converts a Claude 3.7 /converse API response payload to the format
-    expected by the OpenAI Chat Completion API.
+    Converts a Claude 3.7 /converse API response payload (non-streaming)
+    to the format expected by the OpenAI Chat Completion API.
     """
     try:
         logging.debug(f"Raw response from Claude 3.7 API: {json.dumps(response, indent=2)}")
 
-        # Validate the structure of the Claude response
+        # Validate the overall response structure
         if not isinstance(response, dict):
             raise ValueError("Invalid response format: response is not a dictionary")
 
+        # --- Extract 'output' ---
         output = response.get("output")
         if not isinstance(output, dict):
-            raise ValueError("Invalid response structure: 'output' is missing or not a dictionary")
+            # Handle cases where the structure might differ unexpectedly
+            # For now, strictly expect the documented /converse structure
+            raise ValueError("Invalid response structure: 'output' field is missing or not a dictionary")
 
+        # --- Extract 'message' from 'output' ---
         message = output.get("message")
         if not isinstance(message, dict):
-            raise ValueError("Invalid response structure: 'output.message' is missing or not a dictionary")
+            raise ValueError("Invalid response structure: 'output.message' field is missing or not a dictionary")
 
+        # --- Extract 'content' list from 'message' ---
         content_list = message.get("content")
         if not isinstance(content_list, list) or not content_list:
+            # Check if content is empty but maybe role/stopReason are still valid?
+            # For now, require non-empty content for a standard completion response.
             raise ValueError("Invalid response structure: 'output.message.content' is missing, not a list, or empty")
 
+        # --- Extract text from the first content block ---
+        # Assuming the primary response content is in the first block and is text.
+        # More complex handling might be needed for multi-modal or tool use responses.
         first_content_block = content_list[0]
         if not isinstance(first_content_block, dict) or "text" not in first_content_block:
-            raise ValueError("Invalid response structure: 'output.message.content[0].text' is missing or invalid")
+            # Log the type if it's not text, for debugging.
+            block_type = first_content_block.get("type", "unknown") if isinstance(first_content_block, dict) else "not a dict"
+            logging.warning(f"First content block is not of type 'text' or missing 'text' key. Type: {block_type}. Content: {first_content_block}")
+            # Decide how to handle non-text blocks. For now, raise error if no text found.
+            # Find the first text block if available?
+            content_text = None
+            for block in content_list:
+                if isinstance(block, dict) and block.get("type") == "text" and "text" in block:
+                    content_text = block["text"]
+                    logging.info(f"Found text content in block at index {content_list.index(block)}")
+                    break
+            if content_text is None:
+                 raise ValueError("No text content block found in the response message content")
+        else:
+            content_text = first_content_block["text"]
 
+
+        # --- Extract 'role' from 'message' ---
+        message_role = message.get("role", "assistant") # Default to assistant if missing
+
+        # --- Extract 'usage' information ---
         usage = response.get("usage")
         if not isinstance(usage, dict):
-            logging.warning("Usage information missing in Claude response.")
-            usage = {} # Use empty dict if usage is missing
+            logging.warning("Usage information missing or invalid in Claude response. Setting tokens to 0.")
+            usage = {} # Use empty dict to avoid errors in .get() calls below
 
-        # Map Claude stopReason to OpenAI finish_reason
+        input_tokens = usage.get("inputTokens", 0)
+        output_tokens = usage.get("outputTokens", 0)
+        # Claude 3.7 /converse should provide totalTokens, but calculate as fallback
+        total_tokens = usage.get("totalTokens", input_tokens + output_tokens)
+
+
+        # --- Map Claude stopReason to OpenAI finish_reason ---
         stop_reason_map = {
             "end_turn": "stop",
             "max_tokens": "length",
             "stop_sequence": "stop",
-            # Add other mappings if needed
+            "tool_use": "tool_calls", # Map tool use if needed
+            # Add other potential Claude stop reasons if they arise
         }
-        finish_reason = stop_reason_map.get(response.get("stopReason"), "stop") # Default to 'stop'
+        claude_stop_reason = response.get("stopReason")
+        finish_reason = stop_reason_map.get(claude_stop_reason, "stop") # Default to 'stop' if unknown or missing
 
-        # Conversion logic from Claude 3.7 /converse API to OpenAI format
+        # --- Construct the OpenAI response ---
         openai_response = {
             "choices": [
                 {
                     "finish_reason": finish_reason,
                     "index": 0,
                     "message": {
-                        "content": first_content_block["text"],
-                        "role": message.get("role", "assistant") # Default role to assistant
-                    }
+                        "content": content_text,
+                        "role": message_role
+                    },
+                    # "logprobs": None, # Not available from Claude
                 }
             ],
             "created": int(time.time()),
-            "id": f"chatcmpl-{random.randint(10000, 99999)}", # Generate a simple random ID
+            "id": f"chatcmpl-claude37-{random.randint(10000, 99999)}", # More specific ID prefix
             "model": model_name, # Use the provided model name
             "object": "chat.completion",
             "usage": {
-                "completion_tokens": usage.get("outputTokens", 0),
-                "prompt_tokens": usage.get("inputTokens", 0),
-                "total_tokens": usage.get("totalTokens", 0)
+                "completion_tokens": output_tokens,
+                "prompt_tokens": input_tokens,
+                "total_tokens": total_tokens
             }
-            # Optionally include system_fingerprint if needed/available
-            # "system_fingerprint": response.get("system_fingerprint")
+            # "system_fingerprint": None # Not available from Claude /converse
         }
         logging.debug(f"Converted response to OpenAI format: {json.dumps(openai_response, indent=2)}")
         return openai_response
+
     except Exception as e:
-        logging.error(f"Error converting Claude 3.7 response to OpenAI format: {e}")
-        logging.error(f"Problematic Claude response: {json.dumps(response, indent=2)}")
-        # Return an error structure in OpenAI format
+        # Log the error with traceback for better debugging
+        logging.error(f"Error converting Claude 3.7 response to OpenAI format: {e}", exc_info=True)
+        # Log the problematic response structure that caused the error
+        logging.error(f"Problematic Claude response structure: {json.dumps(response, indent=2)}")
+        # Return an error structure compliant with OpenAI format
         return {
-            "choices": [],
-            "created": int(time.time()),
-            "id": f"chatcmpl-error-{random.randint(10000, 99999)}",
-            "model": model_name,
-            "object": "chat.completion",
-            "usage": {"completion_tokens": 0, "prompt_tokens": 0, "total_tokens": 0},
-            "error": {
-                "message": f"Failed to convert Claude 3.7 response: {str(e)}",
-                "type": "conversion_error",
-                "param": None,
-                "code": None
-            }
+            "object": "error",
+            "message": f"Failed to convert Claude 3.7 response to OpenAI format. Error: {str(e)}. Check proxy logs for details.",
+            "type": "proxy_conversion_error",
+            "param": None,
+            "code": None
+            # Optionally include parts of the OpenAI structure if needed by the client
+            # "choices": [],
+            # "created": int(time.time()),
+            # "id": f"chatcmpl-error-{random.randint(10000, 99999)}",
+            # "model": model_name,
+            # "usage": {"completion_tokens": 0, "prompt_tokens": 0, "total_tokens": 0},
         }
 
-
-
-def convert_claude_chunk_to_openai(chunk):
+def convert_claude_chunk_to_openai(chunk, model):
     try:
+        # Log the raw chunk received
+        # Log the raw chunk received only if it's a 3.7 model
+        logging.info(f"{model} Raw Claude chunk received: {chunk}")
         # Parse the Claude chunk
         data = json.loads(chunk.replace("data: ", "").strip())
         
@@ -372,6 +412,125 @@ def convert_claude_chunk_to_openai(chunk):
     except Exception as e:
         logging.error(f"Error processing chunk: {e}")
         return f"data: {{\"error\": \"Error processing chunk\"}}\n\n"
+
+# Configure logging if not already configured elsewhere
+# logging.basicConfig(level=logging.DEBUG)
+
+def convert_claude37_chunk_to_openai(claude_chunk, model_name):
+    """
+    Converts a single parsed Claude 3.7 /converse-stream chunk (dictionary)
+    into an OpenAI-compatible Server-Sent Event (SSE) string.
+    Returns None if the chunk doesn't map to an OpenAI event (e.g., metadata).
+    """
+    try:
+        # Generate a consistent-ish ID for the stream parts
+        # In a real scenario, this ID should be generated once per request stream
+        # and potentially passed down or managed in the calling context.
+        stream_id = f"chatcmpl-claude37-{random.randint(10000, 99999)}"
+        created_time = int(time.time())
+
+        openai_chunk_payload = {
+            "id": stream_id,
+            "object": "chat.completion.chunk",
+            "created": created_time,
+            "model": model_name,
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {},
+                    "finish_reason": None
+                    # "logprobs": None # Not available from Claude
+                }
+            ]
+            # "system_fingerprint": None # Not typically sent in chunks
+        }
+
+        # Determine chunk type based on the first key in the dictionary
+        # claude_chunk is string, so need to parse it
+        if isinstance(claude_chunk, str):
+            try:
+                # claude_chunk = json.dumps(claude_chunk.replace("data: ", "").strip())
+                logging.info(f"Parsed Claude chunk: {claude_chunk}")
+                claude_chunk = json.loads(claude_chunk)
+                logging.info(f"Decoded Claude chunk: {json.dumps(claude_chunk, indent=2)}")
+            except json.JSONDecodeError as e:
+                logging.error(f"JSON decode error: {e}")
+                return None
+
+        if not isinstance(claude_chunk, dict) or not claude_chunk:
+                logging.warning(f"Invalid or empty Claude chunk received: {claude_chunk}")
+                return None
+
+        chunk_type = next(iter(claude_chunk)) # Get the first key
+
+        if chunk_type == "messageStart":
+            # Extract role, default to assistant if not present
+            role = claude_chunk.get("messageStart", {}).get("role", "assistant")
+            openai_chunk_payload["choices"][0]["delta"]["role"] = role
+            logging.debug(f"Converted messageStart chunk: {openai_chunk_payload}")
+
+        elif chunk_type == "contentBlockDelta":
+            # Extract text delta
+            text_delta = claude_chunk.get("contentBlockDelta", {}).get("delta", {}).get("text")
+            if text_delta is not None: # Send even if empty string delta? OpenAI usually does.
+                openai_chunk_payload["choices"][0]["delta"]["content"] = text_delta
+                logging.debug(f"Converted contentBlockDelta chunk: {openai_chunk_payload}")
+            else:
+                # If delta or text is missing, maybe log but don't send?
+                logging.debug(f"Ignoring contentBlockDelta without text: {claude_chunk}")
+                return None # Don't send chunk if no actual text delta
+
+        elif chunk_type == "messageStop":
+            # Extract stop reason
+            stop_reason = claude_chunk.get("messageStop", {}).get("stopReason")
+            # Map Claude stopReason to OpenAI finish_reason
+            stop_reason_map = {
+                "end_turn": "stop",
+                "max_tokens": "length",
+                "stop_sequence": "stop",
+                "tool_use": "tool_calls", # Map tool use if needed
+                # Add other potential Claude stop reasons if they arise
+            }
+            finish_reason = stop_reason_map.get(stop_reason)
+            if finish_reason:
+                    openai_chunk_payload["choices"][0]["finish_reason"] = finish_reason
+                    # Delta should be empty or null for the final chunk with finish_reason
+                    openai_chunk_payload["choices"][0]["delta"] = {} # Ensure delta is empty
+                    logging.debug(f"Converted messageStop chunk: {openai_chunk_payload}")
+            else:
+                    logging.warning(f"Unmapped or missing stopReason in messageStop: {stop_reason}. Chunk: {claude_chunk}")
+                    # Decide if to send a default stop or ignore
+                    # Sending with finish_reason=null might be confusing. Let's ignore.
+                    return None
+
+        elif chunk_type in ["contentBlockStart", "contentBlockStop", "metadata"]:
+            # These Claude events don't have a direct OpenAI chunk equivalent
+            # containing message delta or finish reason. Ignore them for streaming output.
+            # Metadata chunk should be handled separately in the calling function (`generate`)
+            # to extract usage information.
+            logging.debug(f"Ignoring Claude chunk type for OpenAI stream: {chunk_type}")
+            return None
+        else:
+            logging.warning(f"Unknown Claude 3.7 chunk type encountered: {chunk_type}. Chunk: {claude_chunk}")
+            return None
+
+        # Format as SSE string if a valid payload was constructed
+        sse_string = f"data: {json.dumps(openai_chunk_payload)}\n\n"
+        return sse_string
+
+    except Exception as e:
+        logging.error(f"Error converting Claude 3.7 chunk to OpenAI format: {e}", exc_info=True)
+        logging.error(f"Problematic Claude chunk: {json.dumps(claude_chunk, indent=2)}")
+        # Optionally return an error chunk in SSE format to the client
+        error_payload = {
+                "id": f"chatcmpl-error-{random.randint(10000, 99999)}",
+                "object": "chat.completion.chunk",
+                "created": int(time.time()),
+                "model": model_name,
+                "choices": [{"index": 0, "delta": {"content": f"[PROXY ERROR: Failed to convert upstream chunk - {str(e)}]"}, "finish_reason": "stop"}]
+        }
+        return f"data: {json.dumps(error_payload)}\n\n"
+
 
 def is_claude_model(model):
     return "claude" in model or "sonnet" in model
@@ -408,7 +567,11 @@ def handle_claude_request(payload, model="3.5-sonnet"):
         if model == key:
             urls = normalized_model_deployment_urls[key]
             if stream:
-                url = f"{load_balance_url(urls, key)}/invoke-with-response-stream"
+                # Check if the model name contains '3.7' for streaming endpoint
+                if "3.7" in model:
+                    url = f"{load_balance_url(urls, key)}/converse-stream"
+                else:
+                    url = f"{load_balance_url(urls, key)}/invoke-with-response-stream"
             else:
                 # Check if the model name contains '3.7'
                 if "3.7" in model:
@@ -495,8 +658,8 @@ def proxy_openai_stream():
     # Check if model contains '3.7' and force non-streaming if it does
     if model and "3.7" in model:
         logging.info(f"Model '{model}' contains '3.7', forcing non-streaming mode (isStream set to False).")
-        isStream = False
-        payload["stream"] = False # Ensure payload reflects the non-streaming requirement
+        # isStream = False
+        # payload["stream"] = False # Ensure payload reflects the non-streaming requirement
 
     isStream = payload.get("stream", True)
     logging.info(f"Extracted model from request payload: {model}")
@@ -560,17 +723,63 @@ def proxy_openai_stream():
                 for chunk in response.iter_content(chunk_size=128):  # Reduced chunk size
                     if chunk:
                         if is_claude_model(model):
-                            buffer += chunk.decode('utf-8')
-                            while "data: " in buffer:
-                                try:
-                                    start = buffer.index("data: ") + len("data: ")
-                                    end = buffer.index("\n\n", start)
-                                    json_chunk = buffer[start:end].strip()
-                                    buffer = buffer[end + 2:]
-                                    json_chunk = convert_claude_chunk_to_openai(json_chunk)
-                                    yield json_chunk.encode('utf-8')
-                                except ValueError:
-                                    break
+                             # --- Claude 3.7 Streaming Logic (Newline Delimited JSON) ---
+                            if "3.7" in model:
+                                logging.info("Using Claude 3.7 /converse-stream parsing logic.")
+                                for line_bytes in response.iter_lines():
+                                    if line_bytes:
+                                        line = line_bytes.decode('utf-8')
+                                        # logging.info(f"Received line from Claude 3.7 stream: {line}")
+                                        line = line.replace("data: ", "").strip()
+                                        import ast
+                                        python_dict = ast.literal_eval(line)
+                                        line_dump = json.dumps(python_dict)
+                                        logging.info(f"convert to the line: {line_dump}")
+                                        # line= line.replace("'", "\"").strip()
+
+                                        # logging.info(f"Received line from Claude 3.7 stream: {line}")
+                                        try:
+                                            # *** PARSE JSON LINE HERE ***
+                                            claude_dict_chunk = json.loads(line_dump)
+                                            chunk_type = claude_dict_chunk.get("type")
+
+                                            if chunk_type == "metadata":
+                                                claude_metadata = claude_dict_chunk.get("metadata", {})
+                                                logging.info(f"Received Claude 3.7 metadata: {claude_metadata}")
+                                                continue # Don't yield metadata, just store it
+
+                                            # *** PASS PARSED DICTIONARY ***
+                                            openai_sse_chunk_str = convert_claude37_chunk_to_openai(claude_dict_chunk, model)
+
+                                            if openai_sse_chunk_str:
+                                                yield openai_sse_chunk_str # Yield the already formatted SSE string
+                                            else:
+                                                logging.debug(f"Ignoring non-yieldable Claude chunk type: {chunk_type}")
+
+                                        except json.JSONDecodeError:
+                                            logging.warning(f"Could not decode JSON from Claude 3.7 line: {line_dump}")
+                                        except Exception as e:
+                                            logging.error(f"Error processing Claude 3.7 line '{line_dump}': {e}", exc_info=True)
+                                            # Optionally yield an error chunk
+                                            error_payload = {"id": f"chatcmpl-error-{random.randint(10000, 99999)}", "object": "chat.completion.chunk", "created": int(time.time()), "model": model, "choices": [{"index": 0, "delta": {"content": f"[PROXY ERROR: Failed to process upstream line - {str(e)}]"}, "finish_reason": "stop"}]}
+                                            yield f"data: {json.dumps(error_payload)}\n\n"
+
+                                # Extract usage from metadata after stream
+                                if claude_metadata and isinstance(claude_metadata.get("usage"), dict):
+                                    total_tokens = claude_metadata["usage"].get("totalTokens", 0)
+                            else :
+                                buffer += chunk.decode('utf-8')
+                                while "data: " in buffer:
+                                    try:
+                                        start = buffer.index("data: ") + len("data: ")
+                                        end = buffer.index("\n\n", start)
+                                        json_chunk = buffer[start:end].strip()
+                                        buffer = buffer[end + 2:]
+                                        json_chunk = convert_claude_chunk_to_openai(json_chunk, model)
+                                        logging.info(f"Processed Claude chunk (OpenAI format): {json_chunk}")
+                                        yield json_chunk.encode('utf-8')
+                                    except ValueError:
+                                        break
                         else:
                             yield chunk
                             try:
