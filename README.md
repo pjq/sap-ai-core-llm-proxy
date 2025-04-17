@@ -22,8 +22,8 @@ After you run the proxy server, you will get
 `sap-ai-core-llm-proxy` is a Python-based project that includes functionalities for token management, forwarding requests to the SAP AI Core API, and handling responses. The project uses Flask to implement the proxy server.
 
 Now it support the following LLM models
-- OpenAI: gpt-4o,gpt-4,gpt-4-32k
-- Claude: anthropic--claude-3.5-sonnet
+- OpenAI: gpt-4o, gpt-o3-mini
+- Claude: 3.5-sonnet, 3.7-sonnet (3.7-sonnect ONLY support stream=false)
 
 ## Features
 - **Token Management**: Fetch and cache tokens for authentication.
@@ -63,13 +63,13 @@ Now it support the following LLM models
                 "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/<hidden_id_1>",
                 "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/<hidden_id_2>"
             ],
-            "gpt-4": [
-                "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/<hidden_id_3>"
+            "3.5-sonnet": [
+                "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/<hidden_id_5>"
             ],
-            "gpt-4-32k": [
-                "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/<hidden_id_4>"
+            "3.7-sonnet": [
+                "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/<hidden_id_5>"
             ],
-            "anthropic--claude-3.5-sonnet": [
+            "gpt-o3-mini": [
                 "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/<hidden_id_5>"
             ]
         },
