@@ -592,6 +592,11 @@ def handle_default_request(payload, model="gpt-4o"):
     urls = normalized_model_deployment_urls.get(model, normalized_model_deployment_urls['gpt-4o'])
     if "o3-mini" in model:
         url = f"{load_balance_url(urls, model)}/chat/completions?api-version=2024-12-01-preview"
+        # Remove unsupported parameters for o3-mini
+        if 'temperature' in payload:
+            logging.info(f"Removing 'temperature' parameter for o3-mini model.")
+            del payload['temperature']
+        # Add checks for other potentially unsupported parameters if needed
     else:
         url = f"{load_balance_url(urls, model)}/chat/completions?api-version=2023-05-15"
     return url, payload
