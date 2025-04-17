@@ -105,9 +105,110 @@ def convert_openai_to_claude(payload):
     }
     return claude_payload
 
-def convert_claude_to_openai(response):
+def convert_openai_to_claude37(payload):
+    """
+    Converts an OpenAI API request payload to the format expected by the
+    Claude 3.7 /converse endpoint.
+    """
+    logging.debug(f"Original OpenAI payload for Claude 3.7 conversion: {json.dumps(payload, indent=2)}")
+
+    # Extract system message if present
+    system_message = ""
+    messages = payload.get("messages", [])
+    if messages and messages[0].get("role") == "system":
+        system_message = messages.pop(0).get("content", "")
+
+    # Extract inference configuration parameters
+    inference_config = {}
+    if "max_tokens" in payload:
+        # Ensure max_tokens is an integer
+        try:
+            inference_config["maxTokens"] = int(payload["max_tokens"])
+        except (ValueError, TypeError):
+             logging.warning(f"Invalid value for max_tokens: {payload['max_tokens']}. Using default or omitting.")
+    if "temperature" in payload:
+         # Ensure temperature is a float
+        try:
+            inference_config["temperature"] = float(payload["temperature"])
+        except (ValueError, TypeError):
+            logging.warning(f"Invalid value for temperature: {payload['temperature']}. Using default or omitting.")
+    if "stop" in payload:
+        stop_sequences = payload["stop"]
+        if isinstance(stop_sequences, str):
+            inference_config["stopSequences"] = [stop_sequences]
+        elif isinstance(stop_sequences, list) and all(isinstance(s, str) for s in stop_sequences):
+            inference_config["stopSequences"] = stop_sequences
+        else:
+            logging.warning(f"Unsupported type or content for 'stop' parameter: {stop_sequences}. Ignoring.")
+
+    # Convert messages format
+    converted_messages = []
+    # The loop now iterates through the original messages list,
+    # potentially including the system message if it wasn't removed earlier.
+    for msg in messages:
+        role = msg.get("role")
+        content = msg.get("content")
+
+        # Handle system, user, or assistant roles for inclusion in the messages list
+        # Note: While the top-level 'system' parameter is standard for Claude /converse,
+        # this modification includes the system message in the 'messages' array as requested.
+        # This might deviate from the expected API usage.
+        if role in ["user", "assistant"] :
+            if content and isinstance(content, str):
+                # Claude /converse expects content as a list of blocks, typically [{"text": "..."}]
+                converted_messages.append({
+                    "role": role,
+                    "content": [{"text": content}]
+                })
+            elif content and isinstance(content, list): # Handle potential pre-formatted content (less common from OpenAI)
+                 logging.warning(f"Received list content for role {role}, attempting to use as is for Claude.")
+                 converted_messages.append({
+                     "role": role,
+                     "content": content # Assume it's already in Claude block format
+                 })
+            else:
+                logging.warning(f"Skipping message for role {role} due to missing or invalid content: {msg}")
+        else:
+             # Skip any other unsupported roles
+             logging.warning(f"Skipping message with unsupported role for Claude /converse: {role}")
+             continue
+    
+    # add the system_message to the converted_messages as the first element
+    if system_message:
+        converted_messages.insert(0, {
+            "role": "user",
+            "content": [{"text": system_message}]
+        })
+
+    # Construct the final Claude 3.7 payload
+    claude_payload = {
+        "messages": converted_messages
+    }
+
+    # Add inferenceConfig only if it's not empty
+    if inference_config:
+        claude_payload["inferenceConfig"] = inference_config
+
+    # Add system message if it exists
+    # Claude 3.7 doesn't support the system_message as a top-level parameter
+    # if system_message:
+        # Claude /converse API supports a top-level system prompt as a list of blocks
+        # claude_payload["system"] = [{"text": system_message}]
+
+    logging.debug(f"Converted Claude 3.7 payload: {json.dumps(claude_payload, indent=2)}")
+    return claude_payload
+
+def convert_claude_to_openai(response, model):
+    # Check if the model name indicates Claude 3.7
+    if "3.7" in model:
+        logging.info(f"Detected Claude 3.7 model ('{model}'), using convert_claude37_to_openai.")
+        return convert_claude37_to_openai(response, model)
+
+    # Proceed with the original Claude conversion logic for other models
+    logging.info(f"Using standard Claude conversion for model '{model}'.")
+
     try:
-        logging.debug(f"Raw response from Claude API: {json.dumps(response, indent=4)}")
+        logging.info(f"Raw response from Claude API: {json.dumps(response, indent=4)}")
 
         # Ensure the response contains the expected structure
         if "content" not in response or not isinstance(response["content"], list):
@@ -147,6 +248,95 @@ def convert_claude_to_openai(response):
             "error": "Invalid response from Claude API",
             "details": str(e)
         }
+
+def convert_claude37_to_openai(response, model_name="claude-3.7"):
+    """
+    Converts a Claude 3.7 /converse API response payload to the format
+    expected by the OpenAI Chat Completion API.
+    """
+    try:
+        logging.debug(f"Raw response from Claude 3.7 API: {json.dumps(response, indent=2)}")
+
+        # Validate the structure of the Claude response
+        if not isinstance(response, dict):
+            raise ValueError("Invalid response format: response is not a dictionary")
+
+        output = response.get("output")
+        if not isinstance(output, dict):
+            raise ValueError("Invalid response structure: 'output' is missing or not a dictionary")
+
+        message = output.get("message")
+        if not isinstance(message, dict):
+            raise ValueError("Invalid response structure: 'output.message' is missing or not a dictionary")
+
+        content_list = message.get("content")
+        if not isinstance(content_list, list) or not content_list:
+            raise ValueError("Invalid response structure: 'output.message.content' is missing, not a list, or empty")
+
+        first_content_block = content_list[0]
+        if not isinstance(first_content_block, dict) or "text" not in first_content_block:
+            raise ValueError("Invalid response structure: 'output.message.content[0].text' is missing or invalid")
+
+        usage = response.get("usage")
+        if not isinstance(usage, dict):
+            logging.warning("Usage information missing in Claude response.")
+            usage = {} # Use empty dict if usage is missing
+
+        # Map Claude stopReason to OpenAI finish_reason
+        stop_reason_map = {
+            "end_turn": "stop",
+            "max_tokens": "length",
+            "stop_sequence": "stop",
+            # Add other mappings if needed
+        }
+        finish_reason = stop_reason_map.get(response.get("stopReason"), "stop") # Default to 'stop'
+
+        # Conversion logic from Claude 3.7 /converse API to OpenAI format
+        openai_response = {
+            "choices": [
+                {
+                    "finish_reason": finish_reason,
+                    "index": 0,
+                    "message": {
+                        "content": first_content_block["text"],
+                        "role": message.get("role", "assistant") # Default role to assistant
+                    }
+                }
+            ],
+            "created": int(time.time()),
+            "id": f"chatcmpl-{random.randint(10000, 99999)}", # Generate a simple random ID
+            "model": model_name, # Use the provided model name
+            "object": "chat.completion",
+            "usage": {
+                "completion_tokens": usage.get("outputTokens", 0),
+                "prompt_tokens": usage.get("inputTokens", 0),
+                "total_tokens": usage.get("totalTokens", 0)
+            }
+            # Optionally include system_fingerprint if needed/available
+            # "system_fingerprint": response.get("system_fingerprint")
+        }
+        logging.debug(f"Converted response to OpenAI format: {json.dumps(openai_response, indent=2)}")
+        return openai_response
+    except Exception as e:
+        logging.error(f"Error converting Claude 3.7 response to OpenAI format: {e}")
+        logging.error(f"Problematic Claude response: {json.dumps(response, indent=2)}")
+        # Return an error structure in OpenAI format
+        return {
+            "choices": [],
+            "created": int(time.time()),
+            "id": f"chatcmpl-error-{random.randint(10000, 99999)}",
+            "model": model_name,
+            "object": "chat.completion",
+            "usage": {"completion_tokens": 0, "prompt_tokens": 0, "total_tokens": 0},
+            "error": {
+                "message": f"Failed to convert Claude 3.7 response: {str(e)}",
+                "type": "conversion_error",
+                "param": None,
+                "code": None
+            }
+        }
+
+
 
 def convert_claude_chunk_to_openai(chunk):
     try:
@@ -220,11 +410,18 @@ def handle_claude_request(payload, model="3.5-sonnet"):
             if stream:
                 url = f"{load_balance_url(urls, key)}/invoke-with-response-stream"
             else:
-                url = f"{load_balance_url(urls, key)}/invoke"
+                # Check if the model name contains '3.7'
+                if "3.7" in model:
+                    url = f"{load_balance_url(urls, key)}/converse"
+                else:
+                    url = f"{load_balance_url(urls, key)}/invoke"
             break
     else:
         raise ValueError("No valid Claude or Sonnet model found in deployment URLs.")
-    payload = convert_openai_to_claude(payload)
+    if "3.7" in model:
+        payload = convert_openai_to_claude37(payload)
+    else:
+        payload = convert_openai_to_claude(payload)
     logging.info(f"handle_claude_request: {url}")
     return url, payload
 
@@ -295,8 +492,15 @@ def proxy_openai_stream():
     # Extract model from the request payload
     payload = request.json
     model = payload.get("model")
+    # Check if model contains '3.7' and force non-streaming if it does
+    if model and "3.7" in model:
+        logging.info(f"Model '{model}' contains '3.7', forcing non-streaming mode (isStream set to False).")
+        isStream = False
+        payload["stream"] = False # Ensure payload reflects the non-streaming requirement
+
     isStream = payload.get("stream", True)
     logging.info(f"Extracted model from request payload: {model}")
+    logging.info(f"Streaming mode: {isStream}")
 
     if not model or model not in normalized_model_deployment_urls:
         logging.info("Model not found in deployment URLs, falling back to 3.5-sonnet")
@@ -325,7 +529,7 @@ def proxy_openai_stream():
             # Log the final response before returning it
             final_response = jsonify(response.json())
             if is_claude_model(model):
-                final_response = jsonify(convert_claude_to_openai(response.json()))
+                final_response = jsonify(convert_claude_to_openai(response.json(), model))
             logging.info(f"Final response sent to client: {json.dumps(response.json(), indent=4)}")
             user_id = request.headers.get("Authorization", "unknown")
             max_user_id_length = 30
