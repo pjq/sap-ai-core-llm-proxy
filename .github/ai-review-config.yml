@@ -28,3 +28,7 @@ apiKey: ""
 
 # Tag used to identify AI review comments (for cleanup)
 comment_tag: AI-REVIEW
+
+#Command prefix for simplified commands
+#e.g., "/review" instead of "/ai-review review"
+command_prefix: "/"

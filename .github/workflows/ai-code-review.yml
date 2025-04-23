@@ -28,16 +28,37 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install openai PyGithub pyyaml
+          pip install openai PyGithub pyyaml requests
 
       - name: Get PR diff
         id: get-pr-diff
         if: github.event_name == 'pull_request'
         run: |
           PR_NUMBER=${{ github.event.pull_request.number }}
-          DIFF_URL="https://github.com/${{ github.repository }}/pull/${PR_NUMBER}.diff"
-          curl -s $DIFF_URL > pr_diff.txt
           echo "PR_NUMBER=$PR_NUMBER" >> $GITHUB_ENV
+          
+          echo "Fetching PR diff with curl..."
+          DIFF_URL="https://github.com/${{ github.repository }}/pull/${PR_NUMBER}.diff"
+          curl -L -s $DIFF_URL > pr_diff.txt
+          
+          # Check if file is empty
+          if [ ! -s pr_diff.txt ]; then
+            echo "Warning: Downloaded diff is empty or failed to download"
+            
+            # Try the GitHub API as a backup
+            echo "Attempting to use gh CLI to get diff..."
+            if [ -z "${{ github.token }}" ]; then
+              echo "No GitHub token available for API access"
+            else
+              echo ${{ github.token }} | gh auth login --with-token
+              gh pr diff $PR_NUMBER > pr_diff.txt
+            fi
+          fi
+          
+          # Output some debug info
+          DIFF_SIZE=$(wc -c < pr_diff.txt)
+          echo "Diff size: $DIFF_SIZE bytes"
+          head -n 5 pr_diff.txt
 
       - name: Get comment details
         id: get-comment-details
@@ -54,4 +75,5 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_API_BASE: ${{ secrets.OPENAI_API_BASE }}
           GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_EVENT_PATH: ${{ github.event_path }}
         run: python .github/scripts/ai_review.py
