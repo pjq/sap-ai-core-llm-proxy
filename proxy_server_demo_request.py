@@ -11,7 +11,7 @@ def load_config(file_path):
 config = load_config('config.json')
 
 def demo_request():
-    url = "http://127.0.0.1:5000/v1/chat/completions"
+    url = "http://127.0.0.1:3001/v1/chat/completions"
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {config['secret_authentication_tokens'][0]}"  # Updated
@@ -27,6 +27,7 @@ def demo_request():
         "temperature": 0.0,
         "frequency_penalty": 0,
         "presence_penalty": 0,
+        "model": "gpt-4o",
         "stop": None
     }
 
@@ -43,7 +44,7 @@ def demo_request():
 
 
 def demo_request_stream():
-    url = "http://127.0.0.1:5000/v1/chat/completions"
+    url = "http://127.0.0.1:3001/v1/chat/completions"
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {config['secret_authentication_tokens'][0]}"  # Updated
@@ -81,7 +82,7 @@ def demo_request_stream():
         logging.error(f"An error occurred during demo request: {err}")
 
 def test_list_models():
-    url = "http://127.0.0.1:5000/v1/models"
+    url = "http://127.0.0.1:3001/v1/models"
     headers = {
         "Authorization": f"Bearer {config['secret_authentication_tokens'][0]}"  # Updated
     }
@@ -98,6 +99,6 @@ def test_list_models():
         logging.error(f"An error occurred during request to /v1/models: {err}")
 
 
-# demo_request()
-demo_request_stream()
-test_list_models()
+demo_request()
+# demo_request_stream()
+# test_list_models()

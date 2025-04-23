@@ -710,13 +710,20 @@ def proxy_openai_stream():
             token_logger.info(f"User: {user_id}, IP: {ip_address}, Model: {model}, Tokens: {total_tokens}")
             return final_response, response.status_code
         except requests.exceptions.HTTPError as err:
-            logging.error(f"HTTP error occurred while forwarding request: {err}")
+            logging.error(f"HTTP error occurred while forwarding request: errorCode: {err.response.status_code}, error: {err}")
             if err.response is not None:
                 logging.error(f"Error response content: {err.response.text}")
-                return jsonify({"error": err.response.text}), err.response.status_code
+                try:
+                    # Try to parse the error as JSON and forward it
+                    error_data = err.response.json()
+                    return jsonify(error_data), err.response.status_code
+                except json.JSONDecodeError:
+                    # If not JSON, forward the raw text
+                    return jsonify({"error": err.response.text}), err.response.status_code
+            return jsonify({"error": str(err)}), 500
         except Exception as err:
             logging.error(f"An error occurred while forwarding request: {err}")
-            return jsonify({"error": "Internal server error"}), 500
+            return jsonify({"error": str(err)}), 500
 
     # Streaming logic
     def generate():
@@ -860,18 +867,65 @@ def proxy_openai_stream():
                 logging.info("Request to actual API succeeded (Streaming).")
 
             except requests.exceptions.HTTPError as err:
-                logging.error(f"HTTP error occurred while forwarding request: {err}")
+                logging.error(f"HTTP error occurred while forwarding request: errorCode: {err.response.status_code}, error: {err}")
                 if err.response is not None:
                     logging.error(f"Error response content: {err.response.text}")
-                # Don't yield here, let the exception propagate to Flask/Werkzeug
-                # which will handle the already sent headers situation.
-                # yield f"data: {json.dumps({'error': 'Upstream HTTP error', 'status': err.response.status_code, 'details': err.response.text})}\n\n".encode('utf-8')
-                raise # Re-raise the exception
+                    # Format error as an SSE message
+                    try:
+                        # Try to parse the error as JSON
+                        error_data = err.response.json()
+                        error_payload = {
+                            "id": f"error-{random.randint(10000, 99999)}",
+                            "object": "error",
+                            "created": int(time.time()),
+                            "model": model,
+                            "error": error_data
+                        }
+                    except json.JSONDecodeError:
+                        # If not JSON, use the raw text
+                        error_payload = {
+                            "id": f"error-{random.randint(10000, 99999)}",
+                            "object": "error",
+                            "created": int(time.time()),
+                            "model": model,
+                            "error": {
+                                "message": err.response.text,
+                                "type": "upstream_error",
+                                "code": err.response.status_code
+                            }
+                        }
+                    yield f"data: {json.dumps(error_payload)}\n\n".encode('utf-8')
+                    yield "data: [DONE]\n\n".encode('utf-8')
+                else:
+                    # General error without response details
+                    error_payload = {
+                        "id": f"error-{random.randint(10000, 99999)}",
+                        "object": "error",
+                        "created": int(time.time()),
+                        "model": model,
+                        "error": {
+                            "message": str(err),
+                            "type": "upstream_error",
+                            "code": 500
+                        }
+                    }
+                    yield f"data: {json.dumps(error_payload)}\n\n".encode('utf-8')
+                    yield "data: [DONE]\n\n".encode('utf-8')
             except Exception as err:
                 logging.error(f"An error occurred while forwarding request: {err}", exc_info=True)
-                # Don't yield here, let the exception propagate.
-                # yield f"data: {json.dumps({'error': 'Internal proxy error', 'details': str(err)})}\n\n".encode('utf-8')
-                raise # Re-raise the exception
+                error_payload = {
+                    "id": f"error-{random.randint(10000, 99999)}",
+                    "object": "error",
+                    "created": int(time.time()),
+                    "model": model,
+                    "error": {
+                        "message": str(err),
+                        "type": "proxy_error",
+                        "code": 500
+                    }
+                }
+                yield f"data: {json.dumps(error_payload)}\n\n".encode('utf-8')
+                yield "data: [DONE]\n\n".encode('utf-8')
 
     return Response(stream_with_context(generate()), content_type='text/event-stream') # Use text/event-stream for SSE
 
