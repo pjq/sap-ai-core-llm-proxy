@@ -300,9 +300,41 @@ def post_inline_comments(pr, file_path, line_num, content):
     logger.info(f"Adding inline comment to {file_path}:{line_num}")
     
     try:
-        pr.create_comment(full_comment, commit=pr.head.sha, path=file_path, position=line_num)
-        logger.info(f"Inline comment added successfully to {file_path}:{line_num}")
-        return True
+        # Get the PR for inline comments
+        files = pr.get_files()
+        for file in files:
+            if file.filename == file_path:
+                try:
+                    # Create review comment using the correct method signature
+                    pr.create_review_comment(
+                        body=full_comment,
+                        path=file_path,
+                        position=line_num,  # Using line_num as position - may need adjustment
+                    )
+                    logger.info(f"Inline comment added successfully to {file_path}:{line_num}")
+                    return True
+                except Exception as e:
+                    logger.error(f"Error adding inline comment: {str(e)}")
+                    
+                    # Fallback: try to create a review and add comments to it
+                    try:
+                        logger.info("Trying alternative approach with a review")
+                        review = pr.create_review(
+                            body="Code review comments",
+                            comments=[{
+                                'path': file_path, 
+                                'position': line_num, 
+                                'body': full_comment
+                            }]
+                        )
+                        logger.info("Successfully added comment via review")
+                        return True
+                    except Exception as e2:
+                        logger.error(f"Alternative approach also failed: {str(e2)}")
+                        return False
+                
+        logger.warning(f"File {file_path} not found in PR files")
+        return False
     except Exception as e:
         logger.error(f"Error adding inline comment: {str(e)}")
         return False
@@ -459,6 +491,8 @@ def handle_command(pr, command, comment_id):
         params = parts[2] if len(parts) > 2 else ""
         
     logger.info(f"Handling command: '{action}' with params: '{params}'")
+    
+    client = get_client()  # Initialize client here for all commands
     
     if action in ["summarize", "summary", "s"]:
         logger.info("Executing summarize command")
