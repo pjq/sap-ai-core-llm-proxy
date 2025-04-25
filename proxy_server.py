@@ -96,6 +96,7 @@ def convert_openai_to_claude(payload):
     claude_payload = {
         "anthropic_version": "bedrock-2023-05-31",
         "max_tokens": payload.get("max_tokens", 4096000),
+        "temperature": payload.get("temperature", 1.0),
         "system": system_message,
         "messages": messages,
         # "thinking": {
