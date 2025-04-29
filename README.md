@@ -21,14 +21,15 @@ After you run the proxy server, you will get
 ## Overview
 `sap-ai-core-llm-proxy` is a Python-based project that includes functionalities for token management, forwarding requests to the SAP AI Core API, and handling responses. The project uses Flask to implement the proxy server.
 
-Now it support the following LLM models
+Now it supports the following LLM models
 - OpenAI: gpt-4o, gpt-o3-mini
 - Claude: 3.5-sonnet, 3.7-sonnet 
 
 ## Features
 - **Token Management**: Fetch and cache tokens for authentication.
 - **Proxy Server**: Forward requests to the AI API with token management.
-- **Load Balance**: Support the simple Load Balance.
+- **Load Balance**: Support the load balancing across multiple subAccounts and deployments.
+- **Multi-subAccount Support**: Distribute requests across multiple SAP AI Core subAccounts.
 - **Model Management**: List available models and handle model-specific requests.
 
 ## Prerequisites
@@ -54,31 +55,44 @@ Now it support the following LLM models
     cp config.json.example config.json
     ```
 
-2. Edit `config.json` to include your specific details. The file should have the following structure:
-    ```json
-    {
-        "service_key_json": "demokey.json",
-        "deployment_models": {
-            "gpt-4o": [
-                "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/<hidden_id_1>",
-                "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/<hidden_id_2>"
-            ],
-            "3.5-sonnet": [
-                "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/<hidden_id_5>"
-            ],
-            "3.7-sonnet": [
-                "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/<hidden_id_5>"
-            ],
-            "gpt-o3-mini": [
-                "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/<hidden_id_5>"
-            ]
-        },
-        "secret_authentication_tokens": ["<hidden_key_1>", "<hidden_key_2>", "<hidden_key_3>", "<hidden_key_4>"],
-        "resource_group": "default"
-    }
-    ```
+2. Edit `config.json` to include your specific details. The file supports both multi-account configurations:
 
-3. Get a configuration file `demokey.json` with the following structure from the SAP AI Core Guidelines.
+   ### Multi-Account Configuration 
+   ```json
+   {
+       "subAccounts": {
+           "subAccount1": {
+               "resource_group": "default",
+               "service_key_json": "demokey1.json",
+               "deployment_models": {
+                   "gpt-4o": [
+                       "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/<hidden_id_1>"
+                   ],
+                   "3.5-sonnet": [
+                       "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/<hidden_id_2>"
+                   ]
+               }
+           },
+           "subAccount2": {
+               "resource_group": "default",
+               "service_key_json": "demokey2.json",
+               "deployment_models": {
+                   "gpt-4o": [
+                       "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/<hidden_id_3>"
+                   ],
+                   "3.7-sonnet": [
+                       "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/<hidden_id_4>"
+                   ]
+               }
+           }
+       },
+       "secret_authentication_tokens": ["<hidden_key_1>", "<hidden_key_2>"],
+       "port": 3001,
+       "host": "127.0.0.1"
+   }
+   ```
+
+3. Get the service key files (e.g., `demokey.json`) with the following structure from the SAP AI Core Guidelines for each subAccount:
     ```json
     {
       "serviceurls": {
@@ -93,10 +107,21 @@ Now it support the following LLM models
     }
     ```
 
-4. [Optional] Place your SSL certificates (`cert.pem` and `key.pem`) in the project root directory if you want to start the local server with HTTPS:
-    ```python
-    app.run(host='127.0.0.1', port=443, debug=True, ssl_context=('cert.pem', 'key.pem'))
-    ```
+4. [Optional] Place your SSL certificates (`cert.pem` and `key.pem`) in the project root directory if you want to start the local server with HTTPS.
+
+## Multi-subAccount Load Balancing
+
+The proxy now supports distributing requests across multiple subAccounts:
+
+1. **Cross-subAccount Load Balancing**: Requests for a specific model are distributed across all subAccounts that have that model deployed.
+
+2. **Within-subAccount Load Balancing**: For each subAccount, if multiple deployment URLs are configured for a model, requests are distributed among them.
+
+3. **Automatic Failover**: If a subAccount or specific deployment is unavailable, the system will automatically try another.
+
+4. **Model Availability**: The proxy consolidates all available models across all subAccounts, allowing you to use any model that's deployed in any subAccount.
+
+5. **Token Management**: Each subAccount maintains its own authentication token with independent refresh cycles.
 
 ## Running the Proxy Server
 

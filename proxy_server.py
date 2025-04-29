@@ -10,7 +10,78 @@ import os
 from datetime import datetime
 import argparse
 import re
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Any
 
+
+@dataclass
+class ServiceKey:
+    clientid: str
+    clientsecret: str
+    url: str
+
+@dataclass
+class TokenInfo:
+    token: Optional[str] = None
+    expiry: float = 0
+    lock: threading.Lock = field(default_factory=threading.Lock)
+
+@dataclass
+class SubAccountConfig:
+    name: str
+    resource_group: str
+    service_key_json: str
+    deployment_models: Dict[str, List[str]]
+    service_key: Optional[ServiceKey] = None
+    token_info: TokenInfo = field(default_factory=TokenInfo)
+    normalized_models: Dict[str, List[str]] = field(default_factory=dict)
+    
+    def load_service_key(self):
+        """Load service key from file"""
+        key_data = load_config(self.service_key_json)
+        self.service_key = ServiceKey(
+            clientid=key_data.get('clientid'),
+            clientsecret=key_data.get('clientsecret'),
+            url=key_data.get('url')
+        )
+        
+    def normalize_model_names(self):
+        """Normalize model names by removing prefixes like 'anthropic--'"""
+        self.normalized_models = {
+            key.replace("anthropic--", ""): value 
+            for key, value in self.deployment_models.items()
+        }
+
+@dataclass
+class ProxyConfig:
+    subaccounts: Dict[str, SubAccountConfig] = field(default_factory=dict)
+    secret_authentication_tokens: List[str] = field(default_factory=list)
+    port: int = 3001
+    host: str = "127.0.0.1"
+    # Global model to subaccount mapping for load balancing
+    model_to_subaccounts: Dict[str, List[str]] = field(default_factory=dict)
+    
+    def initialize(self):
+        """Initialize all subaccounts and build model mappings"""
+        for subaccount in self.subaccounts.values():
+            subaccount.load_service_key()
+            subaccount.normalize_model_names()
+            
+        # Build model to subaccounts mapping for load balancing
+        self.build_model_mapping()
+    
+    def build_model_mapping(self):
+        """Build a mapping of models to the subaccounts that have them"""
+        self.model_to_subaccounts = {}
+        for subaccount_name, subaccount in self.subaccounts.items():
+            for model in subaccount.normalized_models.keys():
+                if model not in self.model_to_subaccounts:
+                    self.model_to_subaccounts[model] = []
+                self.model_to_subaccounts[model].append(subaccount_name)
+
+
+# Global configuration
+proxy_config = ProxyConfig()
 
 app = Flask(__name__)
 
@@ -42,48 +113,137 @@ token_expiry = 0
 lock = threading.Lock()
 
 def load_config(file_path):
+    """Loads configuration from a JSON file with support for multiple subAccounts."""
     with open(file_path, 'r') as file:
-        config = json.load(file)
-    return config
+        config_json = json.load(file)
+    
+    # Check if this is the new format with subAccounts
+    if 'subAccounts' in config_json:
+        # Create a proper ProxyConfig instance
+        proxy_conf = ProxyConfig(
+            secret_authentication_tokens=config_json.get('secret_authentication_tokens', []),
+            port=config_json.get('port', 3001),
+            host=config_json.get('host', '127.0.0.1')
+        )
+        
+        # Parse each subAccount
+        for sub_name, sub_config in config_json.get('subAccounts', {}).items():
+            proxy_conf.subaccounts[sub_name] = SubAccountConfig(
+                name=sub_name,
+                resource_group=sub_config.get('resource_group', 'default'),
+                service_key_json=sub_config.get('service_key_json', ''),
+                deployment_models=sub_config.get('deployment_models', {})
+            )
+        
+        return proxy_conf
+    else:
+        # For backward compatibility - return the raw JSON
+        return config_json
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description="Proxy server for AI models")
     parser.add_argument("--config", type=str, default="config.json", help="Path to the configuration file")
     return parser.parse_args()
 
-def fetch_token():
-    global token, token_expiry
-    with lock:
-        if time.time() < token_expiry:
-            logging.info("Using cached token.")
-            return token
+def fetch_token(subaccount_name: str) -> str:
+    """Fetches or retrieves a cached SAP AI Core authentication token for a specific subAccount.
+    
+    Args:
+        subaccount_name: Name of the subAccount to fetch token for
+        
+    Returns:
+        The authentication token
+        
+    Raises:
+        ValueError: If subaccount is not found or service key is missing
+        ConnectionError: If there's a network issue during token fetch
+    """
+    if subaccount_name not in proxy_config.subaccounts:
+        raise ValueError(f"SubAccount '{subaccount_name}' not found in configuration")
+    
+    subaccount = proxy_config.subaccounts[subaccount_name]
+    if not subaccount.service_key:
+        raise ValueError(f"Service key not loaded for subAccount '{subaccount_name}'")
+    
+    with subaccount.token_info.lock:
+        now = time.time()
+        # Return cached token if still valid
+        if subaccount.token_info.token and now < subaccount.token_info.expiry:
+            logging.info(f"Using cached token for subAccount '{subaccount_name}'.")
+            return subaccount.token_info.token
 
-        logging.info("Fetching new token.")
-        # Encode client_id and client_secret
-        secret = base64.b64encode(f"{service_key['clientid']}:{service_key['clientsecret']}".encode()).decode()
-        token_url = f"{service_key['url']}/oauth/token?grant_type=client_credentials"
-        headers = {"Authorization": f"Basic {secret}"}
+        logging.info(f"Fetching new token for subAccount '{subaccount_name}'.")
 
-        response = requests.post(token_url, headers=headers)
+        # Build auth header with Base64 encoded clientid:clientsecret
+        service_key = subaccount.service_key
+        auth_string = f"{service_key.clientid}:{service_key.clientsecret}"
+        encoded_auth = base64.b64encode(auth_string.encode()).decode()
+        
+        # Build token endpoint URL and headers
+        token_url = f"{service_key.url}/oauth/token?grant_type=client_credentials"
+        headers = {"Authorization": f"Basic {encoded_auth}"}
+
         try:
+            response = requests.post(token_url, headers=headers, timeout=15)
             response.raise_for_status()
-            token = response.json().get('access_token')
-            token_expiry = time.time() + 4 * 3600  # Token valid for 4 hours
-            logging.info("Token fetched successfully.")
+            
+            token_data = response.json()
+            new_token = token_data.get('access_token')
+            
+            # Check for empty token
+            if not new_token:
+                raise ValueError("Fetched token is empty")
+            
+            # Calculate expiry (use expires_in from response, default to 4 hours, with 5-minute buffer)
+            expires_in = int(token_data.get('expires_in', 14400))
+            subaccount.token_info.token = new_token
+            subaccount.token_info.expiry = now + expires_in - 300  # 5-minute buffer
+            
+            logging.info(f"Token fetched successfully for subAccount '{subaccount_name}'.")
+            return new_token
+        
+        except requests.exceptions.Timeout as err:
+            logging.error(f"Timeout fetching token for '{subaccount_name}': {err}")
+            subaccount.token_info.token = None
+            subaccount.token_info.expiry = 0
+            raise TimeoutError(f"Timeout connecting token endpoint for '{subaccount_name}'") from err
+            
         except requests.exceptions.HTTPError as err:
-            logging.error(f"HTTP error occurred while fetching token: {err}")
-            raise
+            logging.error(f"HTTP error fetching token for '{subaccount_name}': {err.response.status_code}-{err.response.text}")
+            subaccount.token_info.token = None
+            subaccount.token_info.expiry = 0
+            raise ConnectionError(f"HTTP Error {err.response.status_code} fetching token for '{subaccount_name}'") from err
+            
+        except requests.exceptions.RequestException as err:
+            logging.error(f"Network/Request error fetching token for '{subaccount_name}': {err}")
+            subaccount.token_info.token = None
+            subaccount.token_info.expiry = 0
+            raise ConnectionError(f"Network error fetching token for '{subaccount_name}': {err}") from err
+            
         except Exception as err:
-            logging.error(f"An error occurred while fetching token: {err}")
-            raise
-        return token
+            logging.error(f"Unexpected token fetch error for '{subaccount_name}': {err}", exc_info=True)
+            subaccount.token_info.token = None
+            subaccount.token_info.expiry = 0
+            raise RuntimeError(f"Unexpected error processing token response for '{subaccount_name}': {err}") from err
 
 def verify_request_token(request):
+    """Verifies the Authorization header from the incoming client request."""
     token = request.headers.get("Authorization")
-    logging.info(f"verify_request_token, Token received in request: {token}")
-    if not token or not any(secret_key in token for secret_key in secret_authentication_tokens):
-        logging.error("Invalid or missing token.")
+    logging.info(f"verify_request_token, Token received in request: {token[:15]}..." if token and len(token) > 15 else token)
+    
+    if not proxy_config.secret_authentication_tokens:
+        logging.warning("Client authentication disabled - no tokens configured.")
+        return True
+        
+    if not token:
+        logging.error("Missing token in request.")
         return False
+        
+    if not any(secret_key in token for secret_key in proxy_config.secret_authentication_tokens):
+        logging.error("Invalid token - no matching token found.")
+        return False
+        
+    logging.debug("Client token verified successfully.")
     return True
 
 def convert_openai_to_claude(payload):
@@ -536,71 +696,152 @@ def convert_claude37_chunk_to_openai(claude_chunk, model_name):
 def is_claude_model(model):
     return "claude" in model or "sonnet" in model
 
-def load_balance_url(urls, model_key):
-    # Implement a simple round-robin load balancing mechanism
-    logging.debug(f"load_balance_url called with model_key: {model_key} and urls: {urls}")
+def load_balance_url(model_name: str) -> tuple:
+    """
+    Load balance requests for a model across all subAccounts that have it deployed.
+    
+    Args:
+        model_name: Name of the model to load balance
+        
+    Returns:
+        Tuple of (selected_url, subaccount_name, resource_group)
+        
+    Raises:
+        ValueError: If no subAccounts have the requested model
+    """
+    # Initialize counters dictionary if it doesn't exist
     if not hasattr(load_balance_url, "counters"):
-        logging.debug("Initializing 'counters' attribute for load balancing.")
         load_balance_url.counters = {}
     
-    if model_key not in load_balance_url.counters:
-        logging.debug(f"Initializing counter for model key '{model_key}'.")
-        load_balance_url.counters[model_key] = 0
+    # Get list of subAccounts that have this model
+    if model_name not in proxy_config.model_to_subaccounts or not proxy_config.model_to_subaccounts[model_name]:
+        logging.error(f"No subAccounts with model '{model_name}' found")
+        raise ValueError(f"Model '{model_name}' not available in any subAccount")
     
-    # Ensure the list of URLs is not empty to avoid division by zero
-    if not urls:
-        logging.error(f"No URLs available for model key '{model_key}'.")
-        raise ValueError(f"No URLs available for model key '{model_key}'.")
-
-    index = load_balance_url.counters[model_key] % len(urls)
-    logging.debug(f"Model key '{model_key}' selected index {index}. Counter value: {load_balance_url.counters[model_key]}")
-    load_balance_url.counters[model_key] += 1
-    logging.info(f"load_balance_url for {model_key}: Selected URL: {urls[index]}")
-    return urls[index]
+    subaccount_names = proxy_config.model_to_subaccounts[model_name]
+    
+    # Create counter for this model if it doesn't exist
+    if model_name not in load_balance_url.counters:
+        load_balance_url.counters[model_name] = 0
+    
+    # Select subAccount using round-robin
+    subaccount_index = load_balance_url.counters[model_name] % len(subaccount_names)
+    selected_subaccount = subaccount_names[subaccount_index]
+    
+    # Increment counter for next request
+    load_balance_url.counters[model_name] += 1
+    
+    # Get the model URL list from the selected subAccount
+    subaccount = proxy_config.subaccounts[selected_subaccount]
+    url_list = subaccount.normalized_models.get(model_name, [])
+    
+    if not url_list:
+        logging.error(f"Model '{model_name}' listed for subAccount '{selected_subaccount}' but no URLs found")
+        raise ValueError(f"Configuration error: No URLs for model '{model_name}' in subAccount '{selected_subaccount}'")
+    
+    # Select URL using round-robin within the subAccount
+    url_counter_key = f"{selected_subaccount}:{model_name}"
+    if url_counter_key not in load_balance_url.counters:
+        load_balance_url.counters[url_counter_key] = 0
+    
+    url_index = load_balance_url.counters[url_counter_key] % len(url_list)
+    selected_url = url_list[url_index]
+    
+    # Increment URL counter for next request
+    load_balance_url.counters[url_counter_key] += 1
+    
+    # Get resource group for the selected subAccount
+    resource_group = subaccount.resource_group
+    
+    logging.info(f"Selected subAccount '{selected_subaccount}' and URL '{selected_url}' for model '{model_name}'")
+    return selected_url, selected_subaccount, resource_group
 
 def handle_claude_request(payload, model="3.5-sonnet"):
+    """Handle Claude model request with multi-subAccount support.
+    
+    Args:
+        payload: Request payload from client
+        model: The model name to use
+        
+    Returns:
+        Tuple of (endpoint_url, modified_payload, subaccount_name)
+    """
     stream = payload.get("stream", True)  # Default to True if 'stream' is not provided
-    # stream = False
     logging.info(f"handle_claude_request: model={model} stream={stream}")
-    for key in normalized_model_deployment_urls:
-        # logging.info(f"handle_claude_request: key={key}")
-        # if 'claud' in key or 'sonnet' in key:
-        if model == key:
-            urls = normalized_model_deployment_urls[key]
-            if stream:
-                # Check if the model name contains '3.7' for streaming endpoint
-                if "3.7" in model:
-                    url = f"{load_balance_url(urls, key)}/converse-stream"
-                else:
-                    url = f"{load_balance_url(urls, key)}/invoke-with-response-stream"
-            else:
-                # Check if the model name contains '3.7'
-                if "3.7" in model:
-                    url = f"{load_balance_url(urls, key)}/converse"
-                else:
-                    url = f"{load_balance_url(urls, key)}/invoke"
-            break
+    
+    # Get the selected URL, subaccount and resource group using our load balancer
+    try:
+        selected_url, subaccount_name, _ = load_balance_url(model)
+    except ValueError as e:
+        logging.error(f"Failed to load balance URL for model '{model}': {e}")
+        raise ValueError(f"No valid Claude model found for '{model}' in any subAccount")
+    
+    # Determine the endpoint path based on model and streaming settings
+    if stream:
+        # Check if the model name contains '3.7' for streaming endpoint
+        if "3.7" in model:
+            endpoint_path = "/converse-stream"
+        else:
+            endpoint_path = "/invoke-with-response-stream"
     else:
-        raise ValueError("No valid Claude or Sonnet model found in deployment URLs.")
+        # Check if the model name contains '3.7'
+        if "3.7" in model:
+            endpoint_path = "/converse"
+        else:
+            endpoint_path = "/invoke"
+    
+    endpoint_url = f"{selected_url.rstrip('/')}{endpoint_path}"
+    
+    # Convert the payload to the right format
     if "3.7" in model:
-        payload = convert_openai_to_claude37(payload)
+        modified_payload = convert_openai_to_claude37(payload)
     else:
-        payload = convert_openai_to_claude(payload)
-    logging.info(f"handle_claude_request: {url}")
-    return url, payload
+        modified_payload = convert_openai_to_claude(payload)
+    
+    logging.info(f"handle_claude_request: {endpoint_url} (subAccount: {subaccount_name})")
+    return endpoint_url, modified_payload, subaccount_name
 
 def handle_default_request(payload, model="gpt-4o"):
-    urls = normalized_model_deployment_urls.get(model, normalized_model_deployment_urls['gpt-4o'])
+    """Handle default (non-Claude) model request with multi-subAccount support.
+    
+    Args:
+        payload: Request payload from client
+        model: The model name to use
+        
+    Returns:
+        Tuple of (endpoint_url, modified_payload, subaccount_name)
+    """
+    # Get the selected URL, subaccount and resource group using our load balancer
+    try:
+        selected_url, subaccount_name, _ = load_balance_url(model)
+    except ValueError as e:
+        logging.error(f"Failed to load balance URL for model '{model}': {e}")
+        # Try with default model if specified model not found
+        try:
+            fallback_model = "gpt-4o"  # Default fallback
+            logging.info(f"Falling back to '{fallback_model}' model")
+            selected_url, subaccount_name, _ = load_balance_url(fallback_model)
+            model = fallback_model  # Update model to the fallback
+        except ValueError:
+            raise ValueError(f"No valid model found for '{model}' or fallback in any subAccount")
+    
+    # Determine API version based on model
     if "o3-mini" in model:
-        url = f"{load_balance_url(urls, model)}/chat/completions?api-version=2024-12-01-preview"
+        api_version = "2024-12-01-preview"
         # Remove unsupported parameters for o3-mini
-        if 'temperature' in payload:
+        modified_payload = payload.copy()
+        if 'temperature' in modified_payload:
             logging.info(f"Removing 'temperature' parameter for o3-mini model.")
-            del payload['temperature']
+            del modified_payload['temperature']
         # Add checks for other potentially unsupported parameters if needed
     else:
-        url = f"{load_balance_url(urls, model)}/chat/completions?api-version=2023-05-15"
-    return url, payload
+        api_version = "2023-05-15"
+        modified_payload = payload
+    
+    endpoint_url = f"{selected_url.rstrip('/')}/chat/completions?api-version={api_version}"
+    
+    logging.info(f"handle_default_request: {endpoint_url} (subAccount: {subaccount_name})")
+    return endpoint_url, modified_payload, subaccount_name
 
 @app.route('/v1/chat/completions', methods=['OPTIONS'])
 def proxy_openai_stream2():
@@ -632,326 +873,386 @@ def proxy_openai_stream2():
 
 @app.route('/v1/models', methods=['GET'])
 def list_models():
+    """Lists all available models across all subAccounts."""
     logging.info("Received request to /v1/models")
-    models = [
-        {
-            "id": model,
+    
+    # if not verify_request_token(request):
+    #     logging.info("Unauthorized request to list models.")
+    #     return jsonify({"error": "Unauthorized"}), 401
+    
+    # Collect all available models from all subAccounts
+    models = []
+    timestamp = int(time.time())
+    
+    for model_name in proxy_config.model_to_subaccounts.keys():
+        models.append({
+            "id": model_name,
             "object": "model",
-            "created": 1686935002,  # Example timestamp, replace with actual if available
-            "owned_by": "organization-owner"  # Replace with actual owner if available
-        }
-        for model in model_deployment_urls.keys()
-    ]
+            "created": timestamp,
+            "owned_by": "sap-ai-core"
+        })
     
     return jsonify({"object": "list", "data": models}), 200
 
 content_type="Application/json"
 @app.route('/v1/chat/completions', methods=['POST', 'OPTIONS'])
 def proxy_openai_stream():
+    """Main handler for chat completions endpoint with multi-subAccount support."""
     logging.info("Received request to /v1/chat/completions")
-    logging.info(f"Request headers: {request.headers}")
-    logging.info(f"Request body:\n{json.dumps(request.get_json(), indent=4)}")
+    logging.debug(f"Request headers: {request.headers}")
+    logging.debug(f"Request body:\n{json.dumps(request.get_json(), indent=4)}")
+    
+    # Verify client authentication token
     if not verify_request_token(request):
         logging.info("Unauthorized request received. Token verification failed.")
         return jsonify({"error": "Unauthorized"}), 401
 
-    global token
-    token = fetch_token()
-
     # Extract model from the request payload
     payload = request.json
     model = payload.get("model")
-    # Check if model contains '3.7' and force non-streaming if it does
-    if model and "3.7" in model:
-        logging.info(f"Model '{model}' contains '3.7', forcing non-streaming mode (isStream set to False).")
-        # isStream = False
-        # payload["stream"] = False # Ensure payload reflects the non-streaming requirement
+    if not model:
+        logging.warning("No model specified in request, using default model")
+        model = "gpt-4o"  # Default model
+    
+    # Check if model is available in any subAccount
+    if model not in proxy_config.model_to_subaccounts:
+        logging.warning(f"Model '{model}' not found in any subAccount, falling back to default")
+        model = "gpt-4o"  # Fallback model
+        if model not in proxy_config.model_to_subaccounts:
+            return jsonify({"error": f"Model '{model}' not available in any subAccount."}), 404
+    
+    # Check streaming mode
+    is_stream = payload.get("stream", True)
+    logging.info(f"Model: {model}, Streaming: {is_stream}")
+    
+    try:
+        # Handle request based on model type
+        if is_claude_model(model):
+            endpoint_url, modified_payload, subaccount_name = handle_claude_request(payload, model)
+        else:
+            endpoint_url, modified_payload, subaccount_name = handle_default_request(payload, model)
+        
+        # Get token for the selected subAccount
+        subaccount_token = fetch_token(subaccount_name)
+        
+        # Get resource group for the selected subAccount
+        resource_group = proxy_config.subaccounts[subaccount_name].resource_group
+        
+        # Prepare headers for the backend request
+        headers = {
+            "AI-Resource-Group": resource_group,
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {subaccount_token}"
+        }
+        
+        logging.info(f"Forwarding request to {endpoint_url} with subAccount '{subaccount_name}'")
+        
+        # Handle non-streaming requests
+        if not is_stream:
+            return handle_non_streaming_request(endpoint_url, headers, modified_payload, model, subaccount_name)
+        
+        # Handle streaming requests
+        return Response(
+            stream_with_context(generate_streaming_response(
+                endpoint_url, headers, modified_payload, model, subaccount_name
+            )),
+            content_type='text/event-stream'
+        )
+    
+    except ValueError as err:
+        logging.error(f"Value error during request handling: {err}")
+        return jsonify({"error": str(err)}), 400
+    
+    except Exception as err:
+        logging.error(f"Unexpected error during request handling: {err}", exc_info=True)
+        return jsonify({"error": str(err)}), 500
 
-    isStream = payload.get("stream", True)
-    logging.info(f"Extracted model from request payload: {model}")
-    logging.info(f"Streaming mode: {isStream}")
 
-    if not model or model not in normalized_model_deployment_urls:
-        logging.info("Model not found in deployment URLs, falling back to 3.5-sonnet")
-        model = "gpt-4o"
-
-    if is_claude_model(model):
-        url, payload = handle_claude_request(payload, model)
-    else:
-        url, payload = handle_default_request(payload, model)
-
-    headers = {
-        "AI-Resource-Group": resource_group,
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {token}"
-    }
-
-    logging.info(f"Forwarding request to {url} with payload:\n {json.dumps(payload, indent=4)}")
-
-    # Check if streaming is disabled
-    if not isStream:  # Use the isStream variable directly
-        try:
-            response = requests.post(url, headers=headers, json=payload)
-            response.raise_for_status()
-            logging.info("Request to actual API succeeded (non-streaming).")
-            
-            # Log the final response before returning it
-            final_response = jsonify(response.json())
-            if is_claude_model(model):
-                final_response = jsonify(convert_claude_to_openai(response.json(), model))
-            logging.info(f"Final response sent to client: {json.dumps(response.json(), indent=4)}")
-            user_id = request.headers.get("Authorization", "unknown")
-            max_user_id_length = 30
-            if len(user_id) < max_user_id_length:
-                user_id = user_id.ljust(max_user_id_length, '_')
-            else:
-                user_id = user_id[:max_user_id_length]
-            ip_address = request.remote_addr
-            total_tokens = response.json().get("usage", {}).get("total_tokens", 0)
-            token_logger.info(f"User: {user_id}, IP: {ip_address}, Model: {model}, Tokens: {total_tokens}")
-            return final_response, response.status_code
-        except requests.exceptions.HTTPError as err:
-            logging.error(f"HTTP error occurred while forwarding request: errorCode: {err.response.status_code}, error: {err}")
-            if err.response is not None:
-                logging.error(f"Error response content: {err.response.text}")
-                try:
-                    # Try to parse the error as JSON and forward it
-                    error_data = err.response.json()
-                    return jsonify(error_data), err.response.status_code
-                except json.JSONDecodeError:
-                    # If not JSON, forward the raw text
-                    return jsonify({"error": err.response.text}), err.response.status_code
-            return jsonify({"error": str(err)}), 500
-        except Exception as err:
-            logging.error(f"An error occurred while forwarding request: {err}")
-            return jsonify({"error": str(err)}), 500
-
-    # Streaming logic
-    def generate():
-        buffer = ""
-        total_tokens = 0
-        claude_metadata = {} # Initialize outside the loop for 3.7 case
-
-        with requests.post(url, headers=headers, json=payload, stream=True) as response:
+def handle_non_streaming_request(url, headers, payload, model, subaccount_name):
+    """Handle non-streaming request to backend API.
+    
+    Args:
+        url: Backend API endpoint URL
+        headers: Request headers
+        payload: Request payload
+        model: Model name
+        subaccount_name: Name of the selected subAccount
+    
+    Returns:
+        Flask response with the API result
+    """
+    try:
+        # Log the raw request body and payload being forwarded
+        logging.info(f"Raw request received (non-streaming): {json.dumps(request.json, indent=2)}")
+        logging.info(f"Forwarding payload to API (non-streaming): {json.dumps(payload, indent=2)}")
+        
+        # Make request to backend API
+        response = requests.post(url, headers=headers, json=payload, timeout=600)
+        response.raise_for_status()
+        logging.info(f"Non-streaming request succeeded for model '{model}' using subAccount '{subaccount_name}'")
+        
+        # Process response based on model type
+        if is_claude_model(model):
+            final_response = convert_claude_to_openai(response.json(), model)
+        else:
+            final_response = response.json()
+        
+        # Extract token usage
+        total_tokens = final_response.get("usage", {}).get("total_tokens", 0)
+        prompt_tokens = final_response.get("usage", {}).get("prompt_tokens", 0)
+        completion_tokens = final_response.get("usage", {}).get("completion_tokens", 0)
+        
+        # Log token usage with subAccount information
+        user_id = request.headers.get("Authorization", "unknown")
+        if user_id and len(user_id) > 20:
+            user_id = f"{user_id[:20]}..."
+        ip_address = request.remote_addr or request.headers.get("X-Forwarded-For", "unknown_ip")
+        token_logger.info(f"User: {user_id}, IP: {ip_address}, Model: {model}, SubAccount: {subaccount_name}, "
+                          f"PromptTokens: {prompt_tokens}, CompletionTokens: {completion_tokens}, TotalTokens: {total_tokens}")
+        
+        return jsonify(final_response), 200
+    
+    except requests.exceptions.HTTPError as err:
+        logging.error(f"HTTP error in non-streaming request: {err}")
+        if err.response:
+            logging.error(f"Error response: {err.response.text}")
             try:
-                response.raise_for_status()
+                error_data = err.response.json()
+                return jsonify(error_data), err.response.status_code
+            except json.JSONDecodeError:
+                return jsonify({"error": err.response.text}), err.response.status_code
+        return jsonify({"error": str(err)}), 500
+    
+    except Exception as err:
+        logging.error(f"Error in non-streaming request: {err}", exc_info=True)
+        return jsonify({"error": str(err)}), 500
 
-                # --- Claude 3.7 Streaming Logic (Newline Delimited JSON) ---
-                if is_claude_model(model) and "3.7" in model:
-                    logging.info("Using Claude 3.7 /converse-stream parsing logic.")
-                    # Directly iterate over lines for Claude 3.7, bypassing iter_content
-                    for line_bytes in response.iter_lines():
-                        if line_bytes:
-                            line = line_bytes.decode('utf-8')
-                            # logging.info(f"Received line from Claude 3.7 stream: {line}")
-                            if line.startswith("data: "):
-                                line_content = line.replace("data: ", "").strip()
-                                import ast
+
+def generate_streaming_response(url, headers, payload, model, subaccount_name):
+    """Generate streaming response from backend API.
+    
+    Args:
+        url: Backend API endpoint URL
+        headers: Request headers
+        payload: Request payload
+        model: Model name
+        subaccount_name: Name of the selected subAccount
+    
+    Yields:
+        SSE formatted response chunks
+    """
+    # Log the raw request body and payload being forwarded
+    logging.info(f"Raw request received (streaming): {json.dumps(request.json, indent=2)}")
+    logging.info(f"Forwarding payload to API (streaming): {json.dumps(payload, indent=2)}")
+    
+    buffer = ""
+    total_tokens = 0
+    claude_metadata = {}  # For Claude 3.7 metadata
+    chunk = None  # Initialize chunk variable to avoid reference errors
+    
+    # Make streaming request to backend
+    with requests.post(url, headers=headers, json=payload, stream=True, timeout=600) as response:
+        try:
+            response.raise_for_status()
+            
+            # --- Claude 3.7 Streaming Logic ---
+            if is_claude_model(model) and "3.7" in model:
+                logging.info(f"Using Claude 3.7 streaming for subAccount '{subaccount_name}'")
+                for line_bytes in response.iter_lines():
+                    if line_bytes:
+                        line = line_bytes.decode('utf-8')
+                        if line.startswith("data: "):
+                            line_content = line.replace("data: ", "").strip()
+                            import ast
+                            try:
                                 line_content = ast.literal_eval(line_content)
                                 line_content = json.dumps(line_content)
+                                claude_dict_chunk = json.loads(line_content)
+                                chunk_type = claude_dict_chunk.get("type")
+                                
+                                # Handle metadata chunk
+                                if chunk_type == "metadata":
+                                    claude_metadata = claude_dict_chunk.get("metadata", {})
+                                    logging.debug(f"Received Claude 3.7 metadata from '{subaccount_name}': {claude_metadata}")
+                                    continue
+                                
+                                # Convert chunk to OpenAI format
+                                openai_sse_chunk_str = convert_claude37_chunk_to_openai(claude_dict_chunk, model)
+                                if openai_sse_chunk_str:
+                                    yield openai_sse_chunk_str
+                            except Exception as e:
+                                logging.error(f"Error processing Claude 3.7 chunk from '{subaccount_name}': {e}", exc_info=True)
+                                error_payload = {
+                                    "id": f"chatcmpl-error-{random.randint(10000, 99999)}",
+                                    "object": "chat.completion.chunk",
+                                    "created": int(time.time()),
+                                    "model": model,
+                                    "choices": [{
+                                        "index": 0,
+                                        "delta": {"content": f"[PROXY ERROR: Failed to process upstream data]"},
+                                        "finish_reason": "stop"
+                                    }]
+                                }
+                                yield f"data: {json.dumps(error_payload)}\n\n"
+                
+                # Extract token counts from metadata
+                if claude_metadata and isinstance(claude_metadata.get("usage"), dict):
+                    total_tokens = claude_metadata["usage"].get("totalTokens", 0)
+                    prompt_tokens = claude_metadata["usage"].get("inputTokens", 0)
+                    completion_tokens = claude_metadata["usage"].get("outputTokens", 0)
+            
+            # --- Other Models (including older Claude) ---
+            else:
+                for chunk in response.iter_content(chunk_size=128):
+                    if chunk:
+                        if is_claude_model(model):  # Older Claude
+                            buffer += chunk.decode('utf-8')
+                            while "data: " in buffer:
                                 try:
-                                    # *** PARSE JSON LINE HERE ***
-                                    # Use json.loads directly if the line is valid JSON
-                                    claude_dict_chunk = json.loads(line_content)
-                                    chunk_type = claude_dict_chunk.get("type")
-
-                                    if chunk_type == "metadata":
-                                        claude_metadata = claude_dict_chunk.get("metadata", {})
-                                        logging.info(f"Received Claude 3.7 metadata: {claude_metadata}")
-                                        continue # Don't yield metadata, just store it
-
-                                    # *** PASS PARSED DICTIONARY ***
-                                    openai_sse_chunk_str = convert_claude37_chunk_to_openai(claude_dict_chunk, model)
-
-                                    if openai_sse_chunk_str:
-                                        yield openai_sse_chunk_str # Yield the already formatted SSE string
-                                    else:
-                                        logging.debug(f"Ignoring non-yieldable Claude chunk type: {chunk_type}")
-
-                                except json.JSONDecodeError:
-                                    logging.warning(f"Could not decode JSON from Claude 3.7 line: {line_content}")
-                                except Exception as e:
-                                    logging.error(f"Error processing Claude 3.7 line '{line_content}': {e}", exc_info=True)
-                                    # Optionally yield an error chunk
-                                    error_payload = {"id": f"chatcmpl-error-{random.randint(10000, 99999)}", "object": "chat.completion.chunk", "created": int(time.time()), "model": model, "choices": [{"index": 0, "delta": {"content": f"[PROXY ERROR: Failed to process upstream line - {str(e)}]"}, "finish_reason": "stop"}]}
-                                    yield f"data: {json.dumps(error_payload)}\n\n"
-                            else:
-                                logging.warning(f"Received unexpected line format from Claude 3.7 stream: {line}")
-                    # Extract usage from metadata after stream for 3.7
-                    if claude_metadata and isinstance(claude_metadata.get("usage"), dict):
-                        total_tokens = claude_metadata["usage"].get("totalTokens", 0)
-
-                # --- Logic for other models (including older Claude) ---
-                else:
-                    for chunk in response.iter_content(chunk_size=128):  # Reduced chunk size
-                        if chunk:
-                            if is_claude_model(model): # Older Claude versions
-                                buffer += chunk.decode('utf-8')
-                                while "data: " in buffer:
+                                    start = buffer.index("data: ") + len("data: ")
+                                    end = buffer.index("\n\n", start)
+                                    json_chunk_str = buffer[start:end].strip()
+                                    buffer = buffer[end + 2:]
+                                    
+                                    # Convert Claude chunk to OpenAI format
+                                    openai_sse_chunk_str = convert_claude_chunk_to_openai(json_chunk_str, model)
+                                    yield openai_sse_chunk_str.encode('utf-8')
+                                    
+                                    # Parse token usage if available
                                     try:
-                                        start = buffer.index("data: ") + len("data: ")
-                                        end = buffer.index("\n\n", start)
-                                        json_chunk_str = buffer[start:end].strip()
-                                        buffer = buffer[end + 2:] # Move buffer past the processed chunk
-
-                                        # Convert the Claude chunk string to OpenAI SSE format string
-                                        openai_sse_chunk_str = convert_claude_chunk_to_openai(json_chunk_str, model)
-
-                                        # Log and yield the OpenAI formatted chunk
-                                        logging.info(f"Processed Claude chunk (OpenAI format): {openai_sse_chunk_str.strip()}")
-                                        yield openai_sse_chunk_str.encode('utf-8')
-
-                                        # Attempt to parse usage from the original Claude chunk for logging
-                                        try:
-                                            claude_chunk_data = json.loads(json_chunk_str)
-                                            # Note: Older Claude streaming might not reliably send usage per chunk.
-                                            # This part might need adjustment based on actual API behavior.
-                                            # If usage is only at the end, this won't capture it correctly.
-                                            # Consider logging tokens based on the final non-streaming response if possible,
-                                            # or accept that streaming token count might be inaccurate for older Claude.
-                                            pass # Placeholder - token counting for older Claude stream is complex
-                                        except json.JSONDecodeError:
-                                            logging.warning(f"Could not parse original Claude chunk for token counting: {json_chunk_str}")
-
-                                    except ValueError:
-                                        # Not enough data in buffer for a full "data: ...\n\n" block, wait for more chunks
-                                        break
-                                    except Exception as e:
-                                        logging.error(f"Error processing older Claude chunk: {e}", exc_info=True)
-                                        # Optionally yield an error chunk
-                                        error_payload = {"id": f"chatcmpl-error-{random.randint(10000, 99999)}", "object": "chat.completion.chunk", "created": int(time.time()), "model": model, "choices": [{"index": 0, "delta": {"content": f"[PROXY ERROR: Failed to process upstream chunk - {str(e)}]"}, "finish_reason": "stop"}]}
-                                        yield f"data: {json.dumps(error_payload)}\n\n"
-                                        break # Stop processing this buffer part on error
-
-                            else: # Default OpenAI-like models
-                                yield chunk
-                                try:
-                                    # Attempt to parse total_tokens from OpenAI chunks (might be in the last chunk)
-                                    chunk_text = chunk.decode('utf-8')
-                                    # Look for the final chunk structure containing usage
-                                    if '"finish_reason":' in chunk_text: # Heuristic for final chunk
-                                        sse_lines = chunk_text.strip().split('\n')
-                                        for sse_line in sse_lines:
-                                            if sse_line.startswith("data: "):
-                                                data_content = sse_line[len("data: "):].strip()
-                                                if data_content.upper() == "[DONE]":
-                                                    continue
-                                                try:
-                                                    data_json = json.loads(data_content)
-                                                    usage = data_json.get("usage")
-                                                    if usage and isinstance(usage, dict):
-                                                         # OpenAI API usually sends usage only in non-streaming or maybe final chunk
-                                                         # This might not capture tokens correctly during streaming.
-                                                         # Consider alternative token counting methods if needed.
-                                                         chunk_total_tokens = usage.get("total_tokens")
-                                                         if chunk_total_tokens is not None:
-                                                             total_tokens = chunk_total_tokens # Assume last chunk has final count
-                                                             logging.info(f"Captured total_tokens from final OpenAI chunk: {total_tokens}")
-                                                except json.JSONDecodeError:
-                                                    logging.warning(f"Could not decode JSON from potential final OpenAI chunk line: {data_content}")
-                                except UnicodeDecodeError:
-                                    logging.warning("Could not decode chunk as UTF-8 for token parsing.")
+                                        claude_data = json.loads(json_chunk_str)
+                                        if "usage" in claude_data:
+                                            prompt_tokens = claude_data["usage"].get("input_tokens", 0)
+                                            completion_tokens = claude_data["usage"].get("output_tokens", 0)
+                                            total_tokens = prompt_tokens + completion_tokens
+                                    except json.JSONDecodeError:
+                                        pass
+                                except ValueError:
+                                    break  # Not enough data in buffer
                                 except Exception as e:
-                                    logging.error(f"An unexpected error occurred while parsing OpenAI chunk for tokens: {e}")
-                            time.sleep(0.01) # Small delay remains
-
-                # Common logging after the stream finishes for all models
-                user_id = request.headers.get("Authorization", "unknown")
-                max_user_id_length = 30
-                if len(user_id) < max_user_id_length:
-                    user_id = user_id.ljust(max_user_id_length, '_')
-                else:
-                    user_id = user_id[:max_user_id_length]
-                ip_address = request.remote_addr
-                # Log the total_tokens accumulated (might be 0 if not captured correctly during stream)
-                token_logger.info(f"User: {user_id}, IP: {ip_address}, Model: {model}, Tokens: {total_tokens} (Streaming)")
-                logging.info("Request to actual API succeeded (Streaming).")
-
-            except requests.exceptions.HTTPError as err:
-                logging.error(f"HTTP error occurred while forwarding request: errorCode: {err.response.status_code}, error: {err}")
-                if err.response is not None:
-                    logging.error(f"Error response content: {err.response.text}")
-                    # Format error as an SSE message
-                    try:
-                        # Try to parse the error as JSON
-                        error_data = err.response.json()
-                        error_payload = {
-                            "id": f"error-{random.randint(10000, 99999)}",
-                            "object": "error",
-                            "created": int(time.time()),
-                            "model": model,
-                            "error": error_data
-                        }
-                    except json.JSONDecodeError:
-                        # If not JSON, use the raw text
-                        error_payload = {
-                            "id": f"error-{random.randint(10000, 99999)}",
-                            "object": "error",
-                            "created": int(time.time()),
-                            "model": model,
-                            "error": {
-                                "message": err.response.text,
-                                "type": "upstream_error",
-                                "code": err.response.status_code
-                            }
-                        }
-                    yield f"data: {json.dumps(error_payload)}\n\n".encode('utf-8')
-                    yield "data: [DONE]\n\n".encode('utf-8')
-                else:
-                    # General error without response details
-                    error_payload = {
-                        "id": f"error-{random.randint(10000, 99999)}",
-                        "object": "error",
-                        "created": int(time.time()),
-                        "model": model,
-                        "error": {
-                            "message": str(err),
-                            "type": "upstream_error",
-                            "code": 500
-                        }
-                    }
-                    yield f"data: {json.dumps(error_payload)}\n\n".encode('utf-8')
-                    yield "data: [DONE]\n\n".encode('utf-8')
-            except Exception as err:
-                logging.error(f"An error occurred while forwarding request: {err}", exc_info=True)
-                error_payload = {
-                    "id": f"error-{random.randint(10000, 99999)}",
-                    "object": "error",
-                    "created": int(time.time()),
-                    "model": model,
-                    "error": {
-                        "message": str(err),
-                        "type": "proxy_error",
-                        "code": 500
-                    }
+                                    logging.error(f"Error processing claude chunk: {e}", exc_info=True)
+                                    break
+                        else:  # OpenAI-like models
+                            yield chunk
+                            try:
+                                # Try to extract token counts from final chunk
+                                if chunk:
+                                    chunk_text = chunk.decode('utf-8')
+                                    if '"finish_reason":' in chunk_text:
+                                        for line in chunk_text.strip().split('\n'):
+                                            if line.startswith("data: ") and line[6:].strip() != "[DONE]":
+                                                try:
+                                                    data = json.loads(line[6:])
+                                                    if "usage" in data:
+                                                        total_tokens = data["usage"].get("total_tokens", 0)
+                                                        prompt_tokens = data["usage"].get("prompt_tokens", 0)
+                                                        completion_tokens = data["usage"].get("completion_tokens", 0)
+                                                except json.JSONDecodeError:
+                                                    pass
+                            except Exception:
+                                pass
+            
+            # Log token usage at the end of the stream
+            user_id = request.headers.get("Authorization", "unknown")
+            if user_id and len(user_id) > 20:
+                user_id = f"{user_id[:20]}..."
+            ip_address = request.remote_addr or request.headers.get("X-Forwarded-For", "unknown_ip")
+            
+            # Log with subAccount information
+            token_logger.info(f"User: {user_id}, IP: {ip_address}, Model: {model}, SubAccount: {subaccount_name}, "
+                             f"PromptTokens: {prompt_tokens if 'prompt_tokens' in locals() else 0}, "
+                             f"CompletionTokens: {completion_tokens if 'completion_tokens' in locals() else 0}, "
+                             f"TotalTokens: {total_tokens} (Streaming)")
+            
+            # Standard stream end
+            yield "data: [DONE]\n\n"
+            
+        except Exception as err:
+            logging.error(f"Error in streaming response from '{subaccount_name}': {err}", exc_info=True)
+            error_payload = {
+                "id": f"error-{random.randint(10000, 99999)}",
+                "object": "error",
+                "created": int(time.time()),
+                "model": model,
+                "error": {
+                    "message": str(err),
+                    "type": "proxy_error",
+                    "code": 500,
+                    "subaccount": subaccount_name
                 }
-                yield f"data: {json.dumps(error_payload)}\n\n".encode('utf-8')
-                yield "data: [DONE]\n\n".encode('utf-8')
-
-    return Response(stream_with_context(generate()), content_type='text/event-stream') # Use text/event-stream for SSE
+            }
+            # Use strings directly without referencing chunk to avoid errors
+            yield f"data: {json.dumps(error_payload)}\n\n"
+            yield "data: [DONE]\n\n"
 
 if __name__ == '__main__':
     args = parse_arguments()
     logging.info(f"Loading configuration from: {args.config}")
     config = load_config(args.config)
     
-    # Update these variables with the new config
-    service_key_json = config['service_key_json']
-    model_deployment_urls = config['deployment_models']
-    secret_authentication_tokens = config['secret_authentication_tokens']
-    resource_group = config['resource_group']
-    
-    # Normalize model_deployment_urls keys
-    normalized_model_deployment_urls = {
-        key.replace("anthropic--", ""): value for key, value in model_deployment_urls.items()
-    }
+    # Check if this is the new format with subAccounts
+    if isinstance(config, ProxyConfig):
+        proxy_config = config
+        # Initialize all subaccounts and build model mappings
+        proxy_config.initialize()
+        
+        # Get server configuration
+        host = proxy_config.host
+        port = proxy_config.port
+        
+        logging.info(f"Loaded multi-subAccount configuration with {len(proxy_config.subaccounts)} subAccounts")
+        logging.info(f"Available subAccounts: {', '.join(proxy_config.subaccounts.keys())}")
+        logging.info(f"Available models: {', '.join(proxy_config.model_to_subaccounts.keys())}")
+    else:
+        # Legacy configuration support
+        logging.warning("Using legacy configuration format (single subAccount)")
+        
+        # Initialize global variables for backward compatibility
+        service_key_json = config['service_key_json']
+        model_deployment_urls = config['deployment_models']
+        secret_authentication_tokens = config['secret_authentication_tokens']
+        resource_group = config['resource_group']
+        
+        # Normalize model_deployment_urls keys
+        normalized_model_deployment_urls = {
+            key.replace("anthropic--", ""): value for key, value in model_deployment_urls.items()
+        }
 
-    # Load service key
-    service_key = load_config(service_key_json)
+        # Load service key
+        service_key = load_config(service_key_json)
 
-    host = config.get('host', '127.0.0.1')  # Use host from config, default to 127.0.0.1 if not specified
-    port = config.get('port', 3001)  # Use port from config, default to 3001 if not specified
+        host = config.get('host', '127.0.0.1')  # Use host from config, default to 127.0.0.1 if not specified
+        port = config.get('port', 3001)  # Use port from config, default to 3001 if not specified
+
+        # Initialize the proxy_config for compatibility with new code
+        proxy_config.secret_authentication_tokens = secret_authentication_tokens
+        proxy_config.host = host
+        proxy_config.port = port
+        
+        # Create a default subAccount
+        default_subaccount = SubAccountConfig(
+            name="default",
+            resource_group=resource_group,
+            service_key_json=service_key_json,
+            deployment_models=model_deployment_urls
+        )
+        
+        # Add service key
+        default_subaccount.service_key = ServiceKey(
+            clientid=service_key.get('clientid', ''),
+            clientsecret=service_key.get('clientsecret', ''),
+            url=service_key.get('url', '')
+        )
+        
+        # Normalize model names
+        default_subaccount.normalized_models = normalized_model_deployment_urls
+        
+        # Add to proxy_config
+        proxy_config.subaccounts["default"] = default_subaccount
+        
+        # Build model mappings
+        proxy_config.build_model_mapping()
 
     logging.info(f"Starting proxy server on host {host} and port {port}...")
     logging.info(f"API Host: http://{host}:{port}/v1")
-    app.run(host=host, port=port, debug=True)
+    app.run(host=host, port=port, debug=False)
