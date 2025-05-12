@@ -851,7 +851,7 @@ def proxy_openai_stream2():
     return jsonify({
         "id": "gen-1747041021-KLZff2aBrJPmV6L1bZf1",
         "provider": "OpenAI",
-        "model": "openai/gpt-4o",
+        "model": "gpt-4o",
         "object": "chat.completion",
         "created": 1747041021,
         "choices": [
@@ -886,6 +886,8 @@ def proxy_openai_stream2():
 def list_models():
     """Lists all available models across all subAccounts."""
     logging.info("Received request to /v1/models")
+    logging.info(f"Request headers: {request.headers}")
+    logging.info(f"Request payload: {request.get_json()}")
     
     # if not verify_request_token(request):
     #     logging.info("Unauthorized request to list models.")
@@ -906,7 +908,7 @@ def list_models():
     return jsonify({"object": "list", "data": models}), 200
 
 content_type="Application/json"
-@app.route('/v1/chat/completions', methods=['POST', 'OPTIONS'])
+@app.route('/v1/chat/completions', methods=['POST'])
 def proxy_openai_stream():
     """Main handler for chat completions endpoint with multi-subAccount support."""
     logging.info("Received request to /v1/chat/completions")
