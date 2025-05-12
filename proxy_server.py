@@ -880,7 +880,7 @@ def proxy_openai_stream2():
                 "reasoning_tokens": 0
             }
         }
-    }), 200
+    }), 204
 
 @app.route('/v1/models', methods=['GET'])
 def list_models():
