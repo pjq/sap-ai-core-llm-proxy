@@ -847,7 +847,7 @@ def handle_default_request(payload, model="gpt-4o"):
 def proxy_openai_stream2():
     logging.info("OPTIONS:Received request to /v1/chat/completions")
     logging.info(f"Request headers: {request.headers}")
-    logging.info(f"Request body:\n {json.dumps(request.get_json(), indent=4)}")
+    logging.info(f"Request payload as string: {request.data.decode('utf-8')}")
     return jsonify({
         "choices": [
             {
