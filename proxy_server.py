@@ -882,7 +882,7 @@ def proxy_openai_stream2():
         }
     }), 204
 
-@app.route('/v1/models', methods=['GET'])
+@app.route('/v1/models', methods=['GET', 'OPTIONS'])
 def list_models():
     """Lists all available models across all subAccounts."""
     logging.info("Received request to /v1/models")
