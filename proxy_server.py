@@ -847,34 +847,47 @@ def handle_default_request(payload, model="gpt-4o"):
 def proxy_openai_stream2():
     logging.info("OPTIONS:Received request to /v1/chat/completions")
     logging.info(f"Request headers: {request.headers}")
-    logging.info(f"Request body:\n {json.dumps(request.get_json(), indent=4)}")
+    logging.info(f"Request payload as string: {request.data.decode('utf-8')}")
     return jsonify({
+        "id": "gen-1747041021-KLZff2aBrJPmV6L1bZf1",
+        "provider": "OpenAI",
+        "model": "gpt-4o",
+        "object": "chat.completion",
+        "created": 1747041021,
         "choices": [
             {
+                "logprobs": None,
                 "finish_reason": "stop",
+                "native_finish_reason": "stop",
                 "index": 0,
                 "message": {
+                    "role": "assistant",
                     "content": "Hi.",
-                    "role": "assistant"
+                    "refusal": None,
+                    "reasoning": None
                 }
             }
         ],
-        "created": 1721357889,
-        "id": "chatcmpl-9mY6rfxwzY7Q9IyzWairiHEYZfD8a",
-        "model": "gpt-4o-2024-05-13",
-        "object": "chat.completion",
-        "system_fingerprint": "fp_abc28019ad",
+        "system_fingerprint": "fp_f5bdcc3276",
         "usage": {
-            "completion_tokens": 2,
             "prompt_tokens": 26,
-            "total_tokens": 28
+            "completion_tokens": 3,
+            "total_tokens": 29,
+            "prompt_tokens_details": {
+                "cached_tokens": 0
+            },
+            "completion_tokens_details": {
+                "reasoning_tokens": 0
+            }
         }
-    }), 200
+    }), 204
 
-@app.route('/v1/models', methods=['GET'])
+@app.route('/v1/models', methods=['GET', 'OPTIONS'])
 def list_models():
     """Lists all available models across all subAccounts."""
     logging.info("Received request to /v1/models")
+    logging.info(f"Request headers: {request.headers}")
+    logging.info(f"Request payload: {request.get_json()}")
     
     # if not verify_request_token(request):
     #     logging.info("Unauthorized request to list models.")
@@ -895,7 +908,7 @@ def list_models():
     return jsonify({"object": "list", "data": models}), 200
 
 content_type="Application/json"
-@app.route('/v1/chat/completions', methods=['POST', 'OPTIONS'])
+@app.route('/v1/chat/completions', methods=['POST'])
 def proxy_openai_stream():
     """Main handler for chat completions endpoint with multi-subAccount support."""
     logging.info("Received request to /v1/chat/completions")
