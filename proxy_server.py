@@ -887,7 +887,7 @@ def list_models():
     """Lists all available models across all subAccounts."""
     logging.info("Received request to /v1/models")
     logging.info(f"Request headers: {request.headers}")
-    logging.info(f"Request payload: {request.get_json()}")
+    # logging.info(f"Request payload: {request.get_json()}")
     
     # if not verify_request_token(request):
     #     logging.info("Unauthorized request to list models.")
