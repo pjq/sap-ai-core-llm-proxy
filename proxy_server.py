@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any
 
 
+
 @dataclass
 class ServiceKey:
     clientid: str
@@ -694,7 +695,7 @@ def convert_claude37_chunk_to_openai(claude_chunk, model_name):
 
 
 def is_claude_model(model):
-    return "claude" in model or "sonnet" in model
+    return any(keyword in model for keyword in ["claude", "clau", "claud", "sonnet", "sonne", "sonn", "CLAUDE", "SONNET"])
 
 def load_balance_url(model_name: str) -> tuple:
     """

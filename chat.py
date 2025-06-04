@@ -19,7 +19,7 @@ def load_config(file_path):
 
 config = load_config('config.json')
 openai.api_key = config['secret_authentication_tokens'][0]
-openai.base_url = "http://127.0.0.1:5000/v1/"
+openai.base_url = "http://127.0.0.1:3001/v1/"
 
 @click.command()
 @click.option('--model', default="gpt-4o", help='OpenAI model to use (e.g., gpt-3.5-turbo, gpt-4).')
