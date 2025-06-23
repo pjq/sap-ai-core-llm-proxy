@@ -361,9 +361,9 @@ def convert_openai_to_claude37(payload):
     return claude_payload
 
 def convert_claude_to_openai(response, model):
-    # Check if the model name indicates Claude 3.7
-    if "3.7" in model:
-        logging.info(f"Detected Claude 3.7 model ('{model}'), using convert_claude37_to_openai.")
+    # Check if the model is Claude 3.7 or 4
+    if is_claude_37_or_4(model):
+        logging.info(f"Detected Claude 3.7/4 model ('{model}'), using convert_claude37_to_openai.")
         return convert_claude37_to_openai(response, model)
 
     # Proceed with the original Claude conversion logic for other models
@@ -413,11 +413,11 @@ def convert_claude_to_openai(response, model):
 
 def convert_claude37_to_openai(response, model_name="claude-3.7"):
     """
-    Converts a Claude 3.7 /converse API response payload (non-streaming)
+    Converts a Claude 3.7/4 /converse API response payload (non-streaming)
     to the format expected by the OpenAI Chat Completion API.
     """
     try:
-        logging.debug(f"Raw response from Claude 3.7 API: {json.dumps(response, indent=2)}")
+        logging.debug(f"Raw response from Claude 3.7/4 API: {json.dumps(response, indent=2)}")
 
         # Validate the overall response structure
         if not isinstance(response, dict):
@@ -475,7 +475,7 @@ def convert_claude37_to_openai(response, model_name="claude-3.7"):
 
         input_tokens = usage.get("inputTokens", 0)
         output_tokens = usage.get("outputTokens", 0)
-        # Claude 3.7 /converse should provide totalTokens, but calculate as fallback
+        # Claude 3.7/4 /converse should provide totalTokens, but calculate as fallback
         total_tokens = usage.get("totalTokens", input_tokens + output_tokens)
 
 
@@ -519,13 +519,13 @@ def convert_claude37_to_openai(response, model_name="claude-3.7"):
 
     except Exception as e:
         # Log the error with traceback for better debugging
-        logging.error(f"Error converting Claude 3.7 response to OpenAI format: {e}", exc_info=True)
+        logging.error(f"Error converting Claude 3.7/4 response to OpenAI format: {e}", exc_info=True)
         # Log the problematic response structure that caused the error
         logging.error(f"Problematic Claude response structure: {json.dumps(response, indent=2)}")
         # Return an error structure compliant with OpenAI format
         return {
             "object": "error",
-            "message": f"Failed to convert Claude 3.7 response to OpenAI format. Error: {str(e)}. Check proxy logs for details.",
+            "message": f"Failed to convert Claude 3.7/4 response to OpenAI format. Error: {str(e)}. Check proxy logs for details.",
             "type": "proxy_conversion_error",
             "param": None,
             "code": None
@@ -580,7 +580,7 @@ def convert_claude_chunk_to_openai(chunk, model):
 
 def convert_claude37_chunk_to_openai(claude_chunk, model_name):
     """
-    Converts a single parsed Claude 3.7 /converse-stream chunk (dictionary)
+    Converts a single parsed Claude 3.7/4 /converse-stream chunk (dictionary)
     into an OpenAI-compatible Server-Sent Event (SSE) string.
     Returns None if the chunk doesn't map to an OpenAI event (e.g., metadata).
     """
@@ -673,7 +673,7 @@ def convert_claude37_chunk_to_openai(claude_chunk, model_name):
             logging.debug(f"Ignoring Claude chunk type for OpenAI stream: {chunk_type}")
             return None
         else:
-            logging.warning(f"Unknown Claude 3.7 chunk type encountered: {chunk_type}. Chunk: {claude_chunk}")
+            logging.warning(f"Unknown Claude 3.7/4 chunk type encountered: {chunk_type}. Chunk: {claude_chunk}")
             return None
 
         # Format as SSE string if a valid payload was constructed
@@ -681,7 +681,7 @@ def convert_claude37_chunk_to_openai(claude_chunk, model_name):
         return sse_string
 
     except Exception as e:
-        logging.error(f"Error converting Claude 3.7 chunk to OpenAI format: {e}", exc_info=True)
+        logging.error(f"Error converting Claude 3.7/4 chunk to OpenAI format: {e}", exc_info=True)
         logging.error(f"Problematic Claude chunk: {json.dumps(claude_chunk, indent=2)}")
         # Optionally return an error chunk in SSE format to the client
         error_payload = {
@@ -696,6 +696,18 @@ def convert_claude37_chunk_to_openai(claude_chunk, model_name):
 
 def is_claude_model(model):
     return any(keyword in model for keyword in ["claude", "clau", "claud", "sonnet", "sonne", "sonn", "CLAUDE", "SONNET"])
+
+def is_claude_37_or_4(model):
+    """
+    Check if the model is Claude 3.7 or Claude 4.
+    
+    Args:
+        model: The model name to check
+        
+    Returns:
+        bool: True if the model is Claude 3.7 or Claude 4, False otherwise
+    """
+    return any(version in model for version in ["3.7", "4"])
 
 def load_balance_url(model_name: str) -> tuple:
     """
@@ -779,14 +791,14 @@ def handle_claude_request(payload, model="3.5-sonnet"):
     
     # Determine the endpoint path based on model and streaming settings
     if stream:
-        # Check if the model name contains '3.7' for streaming endpoint
-        if "3.7" in model:
+        # Check if the model is Claude 3.7 or 4 for streaming endpoint
+        if is_claude_37_or_4(model):
             endpoint_path = "/converse-stream"
         else:
             endpoint_path = "/invoke-with-response-stream"
     else:
-        # Check if the model name contains '3.7'
-        if "3.7" in model:
+        # Check if the model is Claude 3.7 or 4
+        if is_claude_37_or_4(model):
             endpoint_path = "/converse"
         else:
             endpoint_path = "/invoke"
@@ -794,7 +806,7 @@ def handle_claude_request(payload, model="3.5-sonnet"):
     endpoint_url = f"{selected_url.rstrip('/')}{endpoint_path}"
     
     # Convert the payload to the right format
-    if "3.7" in model:
+    if is_claude_37_or_4(model):
         modified_payload = convert_openai_to_claude37(payload)
     else:
         modified_payload = convert_openai_to_claude(payload)
@@ -1069,9 +1081,9 @@ def generate_streaming_response(url, headers, payload, model, subaccount_name):
         try:
             response.raise_for_status()
             
-            # --- Claude 3.7 Streaming Logic ---
-            if is_claude_model(model) and "3.7" in model:
-                logging.info(f"Using Claude 3.7 streaming for subAccount '{subaccount_name}'")
+            # --- Claude 3.7/4 Streaming Logic ---
+            if is_claude_model(model) and is_claude_37_or_4(model):
+                logging.info(f"Using Claude 3.7/4 streaming for subAccount '{subaccount_name}'")
                 for line_bytes in response.iter_lines():
                     if line_bytes:
                         line = line_bytes.decode('utf-8')
