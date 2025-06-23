@@ -22,8 +22,8 @@ After you run the proxy server, you will get
 `sap-ai-core-llm-proxy` is a Python-based project that includes functionalities for token management, forwarding requests to the SAP AI Core API, and handling responses. The project uses Flask to implement the proxy server.
 
 Now it supports the following LLM models
-- OpenAI: gpt-4o, gpt-o3-mini
-- Claude: 3.5-sonnet, 3.7-sonnet 
+- OpenAI: gpt-4o, gpt-4.1, gpt-o3-mini
+- Claude: 3.5-sonnet, 3.7-sonnet, 4-sonnet 
 
 ## Features
 - **Token Management**: Fetch and cache tokens for authentication.
@@ -68,6 +68,9 @@ Now it supports the following LLM models
                    "gpt-4o": [
                        "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/<hidden_id_1>"
                    ],
+                   "gpt-4.1": [
+                       "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/<hidden_id_1b>"
+                   ],
                    "3.5-sonnet": [
                        "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/<hidden_id_2>"
                    ]
@@ -82,6 +85,9 @@ Now it supports the following LLM models
                    ],
                    "3.7-sonnet": [
                        "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/<hidden_id_4>"
+                   ],
+                   "4-sonnet": [
+                       "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/<hidden_id_5>"
                    ]
                }
            }
