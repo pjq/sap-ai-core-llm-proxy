@@ -707,7 +707,7 @@ def is_claude_37_or_4(model):
     Returns:
         bool: True if the model is Claude 3.7 or Claude 4, False otherwise
     """
-    return any(version in model for version in ["3.7", "4"])
+    return any(version in model for version in ["3.7", "4"]) or "3.5" not in model
 
 def load_balance_url(model_name: str) -> tuple:
     """

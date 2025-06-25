@@ -1,13 +1,22 @@
 # sap-ai-core LLM Proxy Server
 
-This project establishes a proxy server to interface with SAP AI Core services, specifically tailored for handling Large Language Model (LLM) requests.
+This project establishes a proxy server to interface with SAP AI Core services, it transform the SAP AI Core LLM API to Open AI Compatible API, no matter it's gpt-4o or claude sonnet 4.
 
-It is compatible with any application that supports the OpenAI API, so you can use it in other Applications, e.g. [Cursor IDE](https://www.cursor.com/) or [Chitchat](https://github.com/pjq/ChitChat/).
+So it is compatible with any application that supports the OpenAI API, so you can use the SAP AI Core in other Applications, e.g. 
+- [Cursor IDE](https://www.cursor.com/) 
+- Cherry Studio
+- Cline
+- Lobe Chat
+- Claude Code (via the Claude Code Router)
+- ChatWise
+- Or [Chitchat](https://github.com/pjq/ChitChat/)
+- Or [ChatCat](https://github.com/pjq/ChatCat/) 
 
 **Important Reminder**: It is crucial to follow the documentation precisely to ensure the successful deployment of the LLM model. Please refer to the official SAP AI Core documentation for detailed instructions and guidelines.
 - https://developers.sap.com/tutorials/ai-core-generative-ai.html
 
 Once the LLM model is deployed, obtain the URL and update it in the config.json file: `deployment_models`.
+
 
 ## Quick Start
 ```shell
@@ -17,6 +26,30 @@ After you run the proxy server, you will get
 - API BaseUrl: http://127.0.0.1:3001/v1
 - API key will be one of secret_authentication_tokens. 
 - Model ID: models you configured in the `deployment_models`
+
+You can check the models list
+- http://127.0.0.1:3001/v1/models
+
+e.g.
+```json
+{
+  "data": [
+    {
+      "created": 1750833737,
+      "id": "4-sonnet",
+      "object": "model",
+      "owned_by": "sap-ai-core"
+    },
+    {
+      "created": 1750833737,
+      "id": "anthropic/claude-4-sonnet",
+      "object": "model",
+      "owned_by": "sap-ai-core"
+    }
+  ],
+  "object": "list"
+}
+```
 
 ## Overview
 `sap-ai-core-llm-proxy` is a Python-based project that includes functionalities for token management, forwarding requests to the SAP AI Core API, and handling responses. The project uses Flask to implement the proxy server.
@@ -179,14 +212,62 @@ Assistant: Hello! I'm an AI language model created by OpenAI. I'm here to help y
 You: 
 ```
 
-## Cursor(AI IDE) Integration
-You can run the proxy_server in your public server, then you can update the base_url in the Cursor model settings
+## Cursor(AI IDE) Integration with SAP AI Core
+You can run the proxy_server in your public server, then you can update the base_url in the Cursor model settings.
+**Now ONLY gpt-4o supported**
 
-## CLINE Integration
+## Cline Integration with SAP AI Core
+You can integrate the SAP AI Core with Cline
 Choose the API Provider -> OpenAI API Compatible
 - Base URL: http://127.0.0.1:3001/v1
 - API key: will be one of secret_authentication_tokens. 
-- Model ID: models you configured in the `deployment_models`
+- Model ID: models you configured in the `deployment_models`, e.g. 4-sonnet
+
+Note: Cline is already official support SAP AI Core.
+
+## Claude Code Integration with SAPI AI Core
+You can use the tool, so you can integrate with the SAP AI Core like how it works with OpenRouter.
+- https://github.com/musistudio/claude-code-router
+
+```shell
+npm install -g @anthropic-ai/claude-code
+npm install -g @musistudio/claude-code-router
+```
+Then start Claude Code
+```shell
+ccr code
+```
+
+Here is the config example
+
+```shell
+cat ~/.claude-code-router/config.json
+```
+
+```JSON
+{
+  "OPENAI_API_KEY": "your secret key",
+  "OPENAI_BASE_URL": "http://127.0.0.1:3001/v1",
+  "OPENAI_MODEL": "3.7-sonnet",
+  "Providers": [
+    {
+      "name": "openrouter",
+      "api_base_url": "http://127.0.0.1:3001/v1",
+      "api_key": "your secret key",
+      "models": [
+        "gpt-4o",
+	    "3.7-sonnet",
+	    "4-sonnet"
+      ]
+    }
+  ],
+  "Router": {
+    "background": "gpt-4o",
+    "think": "deepseek,deepseek-reasoner",
+    "longContext": "openrouter,3.7-sonnet"
+  }
+}
+```
 
 ## Cherry Studio Integration
 Add Provider->Provider Type -> OpenAI
@@ -196,10 +277,11 @@ Add Provider->Provider Type -> OpenAI
 - Add Models: models you configured in the `deployment_models` 
 
 ### Claude Integration
-It seems the IDE will block the request if the model contains claude, so we need to rename it to the name don't contains claude
+It seems the Cursor IDE will block the request if the model contains claude, so we need to rename it to the name don't contains claude
 - claud
 - sonnet
-Now I am using `3.5-sonnet`
+
+Now I am using `3.7-sonnet`
 
 ## License
 This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
