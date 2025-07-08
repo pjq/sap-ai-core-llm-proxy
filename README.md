@@ -56,7 +56,8 @@ e.g.
 
 Now it supports the following LLM models
 - OpenAI: gpt-4o, gpt-4.1, gpt-o3-mini
-- Claude: 3.5-sonnet, 3.7-sonnet, 4-sonnet 
+- Claude: 3.5-sonnet, 3.7-sonnet, 4-sonnet
+- Google Gemini: gemini-2.5-pro
 
 ## Features
 - **Token Management**: Fetch and cache tokens for authentication.
@@ -88,7 +89,7 @@ Now it supports the following LLM models
     cp config.json.example config.json
     ```
 
-2. Edit `config.json` to include your specific details. The file supports both multi-account configurations:
+2. Edit `config.json` to include your specific details. The file supports multi-account configurations for different model types:
 
    ### Multi-Account Configuration 
    ```json
