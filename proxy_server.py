@@ -709,6 +709,315 @@ def is_claude_37_or_4(model):
     """
     return any(version in model for version in ["3.7", "4"]) or "3.5" not in model
 
+def is_gemini_model(model):
+    """
+    Check if the model is a Gemini model.
+    
+    Args:
+        model: The model name to check
+        
+    Returns:
+        bool: True if the model is a Gemini model, False otherwise
+    """
+    return any(keyword in model.lower() for keyword in ["gemini", "gemini-1.5", "gemini-2.5", "gemini-pro", "gemini-flash"])
+
+def convert_openai_to_gemini(payload):
+    """
+    Converts an OpenAI API request payload to the format expected by the
+    Google Vertex AI Gemini generateContent endpoint.
+    """
+    logging.info(f"Original OpenAI payload for Gemini conversion: {json.dumps(payload, indent=2)}")
+
+    # Extract system message if present
+    system_message = ""
+    messages = payload.get("messages", [])
+    if messages and messages[0].get("role") == "system":
+        system_message = messages.pop(0).get("content", "")
+
+    # Build generation config
+    generation_config = {}
+    if "max_tokens" in payload:
+        try:
+            generation_config["maxOutputTokens"] = int(payload["max_tokens"])
+        except (ValueError, TypeError):
+            logging.warning(f"Invalid value for max_tokens: {payload['max_tokens']}. Using default or omitting.")
+    
+    if "temperature" in payload:
+        try:
+            generation_config["temperature"] = float(payload["temperature"])
+        except (ValueError, TypeError):
+            logging.warning(f"Invalid value for temperature: {payload['temperature']}. Using default or omitting.")
+    
+    if "top_p" in payload:
+        try:
+            generation_config["topP"] = float(payload["top_p"])
+        except (ValueError, TypeError):
+            logging.warning(f"Invalid value for top_p: {payload['top_p']}. Using default or omitting.")
+
+    # Convert messages to Gemini format
+    # For single message case (most common), create a simple structure
+    if len(messages) == 1 and messages[0].get("role") == "user":
+        # Single user message case - match the curl example structure
+        user_content = messages[0].get("content", "")
+        
+        # If there's a system message, prepend it to the user content
+        if system_message:
+            user_content = system_message + "\n\n" + user_content
+        
+        gemini_contents = {
+            "role": "user",
+            "parts": {
+                "text": user_content
+            }
+        }
+    else:
+        # Multiple messages case - use array format
+        gemini_contents = []
+        
+        # Add system message as the first user message if it exists
+        if system_message:
+            gemini_contents.append({
+                "role": "user",
+                "parts": {"text": system_message}
+            })
+        
+        # Process remaining messages
+        for msg in messages:
+            role = msg.get("role")
+            content = msg.get("content", "")
+            
+            # Map OpenAI roles to Gemini roles
+            if role == "user":
+                gemini_role = "user"
+            elif role == "assistant":
+                gemini_role = "model"
+            else:
+                logging.warning(f"Skipping message with unsupported role for Gemini: {role}")
+                continue
+            
+            if content:
+                # Check if we can merge with the previous message (same role)
+                if gemini_contents and gemini_contents[-1]["role"] == gemini_role:
+                    # Merge with previous message
+                    if isinstance(gemini_contents[-1]["parts"], dict):
+                        gemini_contents[-1]["parts"]["text"] += "\n\n" + content
+                    else:
+                        # Handle case where parts might be a list (future extension)
+                        gemini_contents[-1]["parts"] = {"text": gemini_contents[-1]["parts"]["text"] + "\n\n" + content}
+                else:
+                    # Add new message
+                    gemini_contents.append({
+                        "role": gemini_role,
+                        "parts": {"text": content}
+                    })
+
+    # Build safety settings (as a single object to match the curl example)
+    safety_settings = {
+        "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+        "threshold": "BLOCK_LOW_AND_ABOVE"
+    }
+
+    # Construct the final Gemini payload
+    gemini_payload = {
+        "contents": gemini_contents
+    }
+
+    # Add generation config if not empty
+    if generation_config:
+        gemini_payload["generation_config"] = generation_config
+
+    # Add safety settings
+    gemini_payload["safety_settings"] = safety_settings
+
+    logging.debug(f"Converted Gemini payload: {json.dumps(gemini_payload, indent=2)}")
+    return gemini_payload
+
+def convert_gemini_to_openai(response, model_name="gemini-pro"):
+    """
+    Converts a Gemini generateContent API response payload (non-streaming)
+    to the format expected by the OpenAI Chat Completion API.
+    """
+    try:
+        logging.debug(f"Raw response from Gemini API: {json.dumps(response, indent=2)}")
+
+        # Validate the overall response structure
+        if not isinstance(response, dict):
+            raise ValueError("Invalid response format: response is not a dictionary")
+
+        # Extract candidates
+        candidates = response.get("candidates", [])
+        if not candidates:
+            raise ValueError("Invalid response structure: no candidates found")
+
+        # Get the first candidate
+        first_candidate = candidates[0]
+        if not isinstance(first_candidate, dict):
+            raise ValueError("Invalid response structure: candidate is not a dictionary")
+
+        # Extract content from the candidate
+        content = first_candidate.get("content", {})
+        if not isinstance(content, dict):
+            raise ValueError("Invalid response structure: content is not a dictionary")
+
+        # Extract parts from content
+        parts = content.get("parts", [])
+        if not parts:
+            raise ValueError("Invalid response structure: no parts found in content")
+
+        # Extract text from the first part
+        first_part = parts[0]
+        if not isinstance(first_part, dict) or "text" not in first_part:
+            raise ValueError("Invalid response structure: no text found in first part")
+
+        content_text = first_part["text"]
+
+        # Extract finish reason
+        finish_reason_map = {
+            "STOP": "stop",
+            "MAX_TOKENS": "length",
+            "SAFETY": "content_filter",
+            "RECITATION": "content_filter",
+            "OTHER": "stop"
+        }
+        gemini_finish_reason = first_candidate.get("finishReason", "STOP")
+        finish_reason = finish_reason_map.get(gemini_finish_reason, "stop")
+
+        # Extract usage information
+        usage_metadata = response.get("usageMetadata", {})
+        prompt_tokens = usage_metadata.get("promptTokenCount", 0)
+        completion_tokens = usage_metadata.get("candidatesTokenCount", 0)
+        total_tokens = usage_metadata.get("totalTokenCount", prompt_tokens + completion_tokens)
+
+        # Construct the OpenAI response
+        openai_response = {
+            "choices": [
+                {
+                    "finish_reason": finish_reason,
+                    "index": 0,
+                    "message": {
+                        "content": content_text,
+                        "role": "assistant"
+                    }
+                }
+            ],
+            "created": int(time.time()),
+            "id": f"chatcmpl-gemini-{random.randint(10000, 99999)}",
+            "model": model_name,
+            "object": "chat.completion",
+            "usage": {
+                "completion_tokens": completion_tokens,
+                "prompt_tokens": prompt_tokens,
+                "total_tokens": total_tokens
+            }
+        }
+        
+        logging.debug(f"Converted response to OpenAI format: {json.dumps(openai_response, indent=2)}")
+        return openai_response
+
+    except Exception as e:
+        logging.error(f"Error converting Gemini response to OpenAI format: {e}", exc_info=True)
+        logging.error(f"Problematic Gemini response structure: {json.dumps(response, indent=2)}")
+        return {
+            "object": "error",
+            "message": f"Failed to convert Gemini response to OpenAI format. Error: {str(e)}. Check proxy logs for details.",
+            "type": "proxy_conversion_error",
+            "param": None,
+            "code": None
+        }
+
+def convert_gemini_chunk_to_openai(gemini_chunk, model_name):
+    """
+    Converts a single Gemini streaming chunk to OpenAI-compatible SSE format.
+    Returns None if the chunk doesn't map to an OpenAI event.
+    """
+    try:
+        # Generate a consistent ID for the stream
+        stream_id = f"chatcmpl-gemini-{random.randint(10000, 99999)}"
+        created_time = int(time.time())
+
+        openai_chunk_payload = {
+            "id": stream_id,
+            "object": "chat.completion.chunk",
+            "created": created_time,
+            "model": model_name,
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {},
+                    "finish_reason": None
+                }
+            ]
+        }
+
+        # Parse the chunk if it's a string
+        if isinstance(gemini_chunk, str):
+            try:
+                gemini_chunk = json.loads(gemini_chunk)
+            except json.JSONDecodeError as e:
+                logging.error(f"JSON decode error: {e}")
+                return None
+
+        if not isinstance(gemini_chunk, dict):
+            logging.warning(f"Invalid Gemini chunk received: {gemini_chunk}")
+            return None
+
+        # Extract candidates
+        candidates = gemini_chunk.get("candidates", [])
+        if not candidates:
+            return None
+
+        first_candidate = candidates[0]
+        
+        # Check for finish reason
+        if "finishReason" in first_candidate:
+            finish_reason_map = {
+                "STOP": "stop",
+                "MAX_TOKENS": "length", 
+                "SAFETY": "content_filter",
+                "RECITATION": "content_filter",
+                "OTHER": "stop"
+            }
+            gemini_finish_reason = first_candidate["finishReason"]
+            finish_reason = finish_reason_map.get(gemini_finish_reason, "stop")
+            openai_chunk_payload["choices"][0]["finish_reason"] = finish_reason
+            # openai_chunk_payload["choices"][0]["delta"] = {}
+            # Extract content delta
+            content = first_candidate.get("content", {})
+            parts = content.get("parts", [])
+            
+            if parts and "text" in parts[0]:
+                text_delta = parts[0]["text"]
+                logging.info(f"Gemini text delta: {text_delta}")
+                openai_chunk_payload["choices"][0]["delta"]["content"] = text_delta
+        else:
+            # Extract content delta
+            content = first_candidate.get("content", {})
+            parts = content.get("parts", [])
+            
+            if parts and "text" in parts[0]:
+                text_delta = parts[0]["text"]
+                logging.info(f"Gemini text delta: {text_delta}")
+                openai_chunk_payload["choices"][0]["delta"]["content"] = text_delta
+
+        # Format as SSE string
+        sse_string = f"data: {json.dumps(openai_chunk_payload)}\n\n"
+        return sse_string
+
+    except Exception as e:
+        logging.error(f"Error converting Gemini chunk to OpenAI format: {e}", exc_info=True)
+        error_payload = {
+            "id": f"chatcmpl-error-{random.randint(10000, 99999)}",
+            "object": "chat.completion.chunk",
+            "created": int(time.time()),
+            "model": model_name,
+            "choices": [{
+                "index": 0,
+                "delta": {"content": f"[PROXY ERROR: Failed to convert upstream chunk - {str(e)}]"},
+                "finish_reason": "stop"
+            }]
+        }
+        return f"data: {json.dumps(error_payload)}\n\n"
+
 def load_balance_url(model_name: str) -> tuple:
     """
     Load balance requests for a model across all subAccounts that have it deployed.
@@ -779,7 +1088,7 @@ def handle_claude_request(payload, model="3.5-sonnet"):
     Returns:
         Tuple of (endpoint_url, modified_payload, subaccount_name)
     """
-    stream = payload.get("stream", True)  # Default to True if 'stream' is not provided
+    stream = payload.get("stream", True)  
     logging.info(f"handle_claude_request: model={model} stream={stream}")
     
     # Get the selected URL, subaccount and resource group using our load balancer
@@ -814,8 +1123,48 @@ def handle_claude_request(payload, model="3.5-sonnet"):
     logging.info(f"handle_claude_request: {endpoint_url} (subAccount: {subaccount_name})")
     return endpoint_url, modified_payload, subaccount_name
 
+def handle_gemini_request(payload, model="gemini-2.5-pro"):
+    """Handle Gemini model request with multi-subAccount support.
+    
+    Args:
+        payload: Request payload from client
+        model: The model name to use
+        
+    Returns:
+        Tuple of (endpoint_url, modified_payload, subaccount_name)
+    """
+    stream = payload.get("stream", True)  # Default to True if 'stream' is not provided
+    logging.info(f"handle_gemini_request: model={model} stream={stream}")
+    
+    # Get the selected URL, subaccount and resource group using our load balancer
+    try:
+        selected_url, subaccount_name, _ = load_balance_url(model)
+    except ValueError as e:
+        logging.error(f"Failed to load balance URL for model '{model}': {e}")
+        raise ValueError(f"No valid Gemini model found for '{model}' in any subAccount")
+    
+    # Extract the model name for the endpoint (e.g., "gemini-2.5-pro" from the model)
+    # The endpoint format is: /models/{model}:generateContent
+    model_endpoint_name = model
+    if ":" in model:
+        model_endpoint_name = model.split(":")[0]
+    
+    # Determine the endpoint path based on streaming settings
+    if stream:
+        endpoint_path = f"/models/{model_endpoint_name}:streamGenerateContent"
+    else:
+        endpoint_path = f"/models/{model_endpoint_name}:generateContent"
+    
+    endpoint_url = f"{selected_url.rstrip('/')}{endpoint_path}"
+    
+    # Convert the payload to Gemini format
+    modified_payload = convert_openai_to_gemini(payload)
+    
+    logging.info(f"handle_gemini_request: {endpoint_url} (subAccount: {subaccount_name})")
+    return endpoint_url, modified_payload, subaccount_name
+
 def handle_default_request(payload, model="gpt-4o"):
-    """Handle default (non-Claude) model request with multi-subAccount support.
+    """Handle default (non-Claude, non-Gemini) model request with multi-subAccount support.
     
     Args:
         payload: Request payload from client
@@ -948,13 +1297,15 @@ def proxy_openai_stream():
             return jsonify({"error": f"Model '{model}' not available in any subAccount."}), 404
     
     # Check streaming mode
-    is_stream = payload.get("stream", True)
+    is_stream = payload.get("stream", False)
     logging.info(f"Model: {model}, Streaming: {is_stream}")
     
     try:
         # Handle request based on model type
         if is_claude_model(model):
             endpoint_url, modified_payload, subaccount_name = handle_claude_request(payload, model)
+        elif is_gemini_model(model):
+            endpoint_url, modified_payload, subaccount_name = handle_gemini_request(payload, model)
         else:
             endpoint_url, modified_payload, subaccount_name = handle_default_request(payload, model)
         
@@ -1020,6 +1371,8 @@ def handle_non_streaming_request(url, headers, payload, model, subaccount_name):
         # Process response based on model type
         if is_claude_model(model):
             final_response = convert_claude_to_openai(response.json(), model)
+        elif is_gemini_model(model):
+            final_response = convert_gemini_to_openai(response.json(), model)
         else:
             final_response = response.json()
         
@@ -1126,6 +1479,65 @@ def generate_streaming_response(url, headers, payload, model, subaccount_name):
                     total_tokens = claude_metadata["usage"].get("totalTokens", 0)
                     prompt_tokens = claude_metadata["usage"].get("inputTokens", 0)
                     completion_tokens = claude_metadata["usage"].get("outputTokens", 0)
+            
+            # --- Gemini Streaming Logic ---
+            elif is_gemini_model(model):
+                logging.info(f"Using Gemini streaming for subAccount '{subaccount_name}'")
+                for line_bytes in response.iter_lines():
+                    if line_bytes:
+                        line = line_bytes.decode('utf-8')
+                        logging.info(f"Gemini raw line received: {line}")
+                        
+                        # Process Gemini streaming lines
+                        line_content = ""
+                        if line.startswith("data: "):
+                            line_content = line.replace("data: ", "").strip()
+                            logging.info(f"Gemini data line content: {line_content}")
+                        elif line.strip():
+                            # Handle lines without "" prefix
+                            line_content = line.strip()
+                            logging.info(f"Gemini line content (no prefix): {line_content}")
+                        
+                        if line_content and line_content != "[DONE]":
+                            try:
+                                gemini_chunk = json.loads(line_content)
+                                logging.info(f"Gemini parsed chunk: {json.dumps(gemini_chunk, indent=2)}")
+                                
+                                # Convert chunk to OpenAI format
+                                openai_sse_chunk_str = convert_gemini_chunk_to_openai(gemini_chunk, model)
+                                if openai_sse_chunk_str:
+                                    logging.info(f"Gemini converted to OpenAI chunk: {openai_sse_chunk_str}")
+                                    yield openai_sse_chunk_str
+                                else:
+                                    logging.info(f"Gemini chunk conversion returned None")
+                                
+                                # Extract token usage from usageMetadata if available
+                                if "usageMetadata" in gemini_chunk:
+                                    usage_metadata = gemini_chunk["usageMetadata"]
+                                    total_tokens = usage_metadata.get("totalTokenCount", 0)
+                                    prompt_tokens = usage_metadata.get("promptTokenCount", 0)
+                                    completion_tokens = usage_metadata.get("candidatesTokenCount", 0)
+                                    logging.info(f"Gemini token usage: prompt={prompt_tokens}, completion={completion_tokens}, total={total_tokens}")
+                                    
+                            except json.JSONDecodeError as e:
+                                logging.error(f"Error parsing Gemini chunk from '{subaccount_name}': {e}")
+                                logging.error(f"Problematic line content: {line_content}")
+                                continue
+                            except Exception as e:
+                                logging.error(f"Error processing Gemini chunk from '{subaccount_name}': {e}", exc_info=True)
+                                logging.error(f"Problematic chunk: {gemini_chunk if 'gemini_chunk' in locals() else 'Failed to parse'}")
+                                error_payload = {
+                                    "id": f"chatcmpl-error-{random.randint(10000, 99999)}",
+                                    "object": "chat.completion.chunk",
+                                    "created": int(time.time()),
+                                    "model": model,
+                                    "choices": [{
+                                        "index": 0,
+                                        "delta": {"content": f"[PROXY ERROR: Failed to process upstream data]"},
+                                        "finish_reason": "stop"
+                                    }]
+                                }
+                                yield f"{json.dumps(error_payload)}\n\n"
             
             # --- Other Models (including older Claude) ---
             else:
