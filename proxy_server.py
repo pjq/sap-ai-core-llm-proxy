@@ -760,6 +760,20 @@ def convert_openai_to_gemini(payload):
         # Single user message case - match the curl example structure
         user_content = messages[0].get("content", "")
         
+        # Handle different content types (string or list)
+        if isinstance(user_content, list):
+            # Extract text from content blocks
+            text_content = ""
+            for block in user_content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    text_content += block.get("text", "")
+                elif isinstance(block, str):
+                    text_content += block
+            user_content = text_content
+        elif not isinstance(user_content, str):
+            # Convert to string if it's neither list nor string
+            user_content = str(user_content)
+        
         # If there's a system message, prepend it to the user content
         if system_message:
             user_content = system_message + "\n\n" + user_content
@@ -796,6 +810,20 @@ def convert_openai_to_gemini(payload):
                 continue
             
             if content:
+                # Handle different content types (string or list)
+                if isinstance(content, list):
+                    # Extract text from content blocks
+                    text_content = ""
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") == "text":
+                            text_content += block.get("text", "")
+                        elif isinstance(block, str):
+                            text_content += block
+                    content = text_content
+                elif not isinstance(content, str):
+                    # Convert to string if it's neither list nor string
+                    content = str(content)
+                
                 # Check if we can merge with the previous message (same role)
                 if gemini_contents and gemini_contents[-1]["role"] == gemini_role:
                     # Merge with previous message
