@@ -318,21 +318,37 @@ def convert_openai_to_claude37(payload):
         # Note: While the top-level 'system' parameter is standard for Claude /converse,
         # this modification includes the system message in the 'messages' array as requested.
         # This might deviate from the expected API usage.
-        if role in ["user", "assistant"] :
-            if content and isinstance(content, str):
-                # Claude /converse expects content as a list of blocks, typically [{"text": "..."}]
-                converted_messages.append({
-                    "role": role,
-                    "content": [{"text": content}]
-                })
-            elif content and isinstance(content, list): # Handle potential pre-formatted content (less common from OpenAI)
-                 logging.warning(f"Received list content for role {role}, attempting to use as is for Claude.")
-                 converted_messages.append({
-                     "role": role,
-                     "content": content # Assume it's already in Claude block format
-                 })
+        if role in ["user", "assistant"]:
+            if content:
+                if isinstance(content, str):
+                    # Convert string content to the required list of blocks format
+                    converted_messages.append({
+                        "role": role,
+                        "content": [{"text": content}]
+                    })
+                elif isinstance(content, list):
+                    # Validate that each item in the list is a correctly structured block
+                    validated_content = []
+                    for item in content:
+                        if isinstance(item, dict) and "text" in item:
+                            validated_content.append(item)
+                        elif isinstance(item, str):
+                             # Convert string item to block format
+                            validated_content.append({"text": item})
+                        else:
+                            logging.warning(f"Skipping invalid content block for role {role}: {item}")
+                    
+                    if validated_content:
+                        converted_messages.append({
+                            "role": role,
+                            "content": validated_content
+                        })
+                    else:
+                        logging.warning(f"Skipping message for role {role} due to all content blocks being invalid: {content}")
+                else:
+                    logging.warning(f"Skipping message for role {role} due to unsupported content type: {type(content)}")
             else:
-                logging.warning(f"Skipping message for role {role} due to missing or invalid content: {msg}")
+                logging.warning(f"Skipping message for role {role} due to missing content: {msg}")
         else:
              # Skip any other unsupported roles
              logging.warning(f"Skipping message with unsupported role for Claude /converse: {role}")
@@ -1480,6 +1496,7 @@ def generate_streaming_response(url, headers, payload, model, subaccount_name):
                         line = line_bytes.decode('utf-8')
                         if line.startswith("data: "):
                             line_content = line.replace("data: ", "").strip()
+                            # logging.info(f"Raw data chunk from Claude API: {line_content}")
                             import ast
                             try:
                                 line_content = ast.literal_eval(line_content)
