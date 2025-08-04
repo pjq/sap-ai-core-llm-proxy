@@ -20,6 +20,7 @@ class ServiceKey:
     clientid: str
     clientsecret: str
     url: str
+    identityzoneid: str
 
 @dataclass
 class TokenInfo:
@@ -43,7 +44,8 @@ class SubAccountConfig:
         self.service_key = ServiceKey(
             clientid=key_data.get('clientid'),
             clientsecret=key_data.get('clientsecret'),
-            url=key_data.get('url')
+            url=key_data.get('url'),
+            identityzoneid=key_data.get('identityzoneid')
         )
         
     def normalize_model_names(self):
@@ -144,6 +146,7 @@ def load_config(file_path):
 def parse_arguments():
     parser = argparse.ArgumentParser(description="Proxy server for AI models")
     parser.add_argument("--config", type=str, default="config.json", help="Path to the configuration file")
+    parser.add_argument("--debug", action="store_true", help="Enable debug mode")
     return parser.parse_args()
 
 def fetch_token(subaccount_name: str) -> str:
@@ -1343,11 +1346,15 @@ def proxy_openai_stream():
         # Get resource group for the selected subAccount
         resource_group = proxy_config.subaccounts[subaccount_name].resource_group
         
+        # Get service key for tenant ID
+        service_key = proxy_config.subaccounts[subaccount_name].service_key
+        
         # Prepare headers for the backend request
         headers = {
             "AI-Resource-Group": resource_group,
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {subaccount_token}"
+            "Authorization": f"Bearer {subaccount_token}",
+            "AI-Tenant-Id": service_key.identityzoneid
         }
         
         logging.info(f"Forwarding request to {endpoint_url} with subAccount '{subaccount_name}'")
@@ -1422,9 +1429,12 @@ def handle_non_streaming_request(url, headers, payload, model, subaccount_name):
     except requests.exceptions.HTTPError as err:
         logging.error(f"HTTP error in non-streaming request: {err}")
         if err.response:
-            logging.error(f"Error response: {err.response.text}")
+            logging.error(f"Error response status: {err.response.status_code}")
+            logging.error(f"Error response headers: {dict(err.response.headers)}")
+            logging.error(f"Error response body: {err.response.text}")
             try:
                 error_data = err.response.json()
+                logging.error(f"Error response JSON: {json.dumps(error_data, indent=2)}")
                 return jsonify(error_data), err.response.status_code
             except json.JSONDecodeError:
                 return jsonify({"error": err.response.text}), err.response.status_code
@@ -1633,6 +1643,37 @@ def generate_streaming_response(url, headers, payload, model, subaccount_name):
             # Standard stream end
             yield "data: [DONE]\n\n"
             
+        except requests.exceptions.HTTPError as err:
+            logging.error(f"HTTP Error in streaming response from '{subaccount_name}': {err}")
+            if hasattr(err, 'response') and err.response is not None:
+                logging.error(f"Error response status: {err.response.status_code}")
+                logging.error(f"Error response headers: {dict(err.response.headers)}")
+                try:
+                    error_content = err.response.text
+                    logging.error(f"Error response body: {error_content}")
+                    # Try to parse as JSON for better formatting
+                    try:
+                        error_json = err.response.json()
+                        logging.error(f"Error response JSON: {json.dumps(error_json, indent=2)}")
+                    except json.JSONDecodeError:
+                        pass
+                except Exception as e:
+                    logging.error(f"Could not read error response content: {e}")
+            
+            error_payload = {
+                "id": f"error-{random.randint(10000, 99999)}",
+                "object": "error",
+                "created": int(time.time()),
+                "model": model,
+                "error": {
+                    "message": str(err),
+                    "type": "http_error",
+                    "code": err.response.status_code if hasattr(err, 'response') and err.response else 500,
+                    "subaccount": subaccount_name
+                }
+            }
+            yield f"data: {json.dumps(error_payload)}\n\n"
+            yield "data: [DONE]\n\n"
         except Exception as err:
             logging.error(f"Error in streaming response from '{subaccount_name}': {err}", exc_info=True)
             error_payload = {
@@ -1653,6 +1694,12 @@ def generate_streaming_response(url, headers, payload, model, subaccount_name):
 
 if __name__ == '__main__':
     args = parse_arguments()
+    
+    # Set logging level based on debug flag
+    if args.debug:
+        logging.getLogger().setLevel(logging.DEBUG)
+        logging.debug("Debug mode enabled")
+    
     logging.info(f"Loading configuration from: {args.config}")
     config = load_config(args.config)
     
@@ -1707,7 +1754,8 @@ if __name__ == '__main__':
         default_subaccount.service_key = ServiceKey(
             clientid=service_key.get('clientid', ''),
             clientsecret=service_key.get('clientsecret', ''),
-            url=service_key.get('url', '')
+            url=service_key.get('url', ''),
+            identityzoneid=service_key.get('identityzoneid', '')
         )
         
         # Normalize model names
@@ -1721,4 +1769,4 @@ if __name__ == '__main__':
 
     logging.info(f"Starting proxy server on host {host} and port {port}...")
     logging.info(f"API Host: http://{host}:{port}/v1")
-    app.run(host=host, port=port, debug=False)
+    app.run(host=host, port=port, debug=args.debug)
