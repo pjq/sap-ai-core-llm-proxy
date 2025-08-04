@@ -22,6 +22,13 @@ Once the LLM model is deployed, obtain the URL and update it in the config.json 
 ```shell
 python proxy_server.py --config config.json
 ```
+
+### Debug Mode
+For detailed logging and troubleshooting, you can enable debug mode:
+```shell
+python proxy_server.py --config config.json --debug
+```
+
 After you run the proxy server, you will get
 - API BaseUrl: http://127.0.0.1:3001/v1
 - API key will be one of secret_authentication_tokens. 
@@ -51,11 +58,17 @@ e.g.
 }
 ```
 
+### OpenAI Embeddings API
+The proxy server now supports OpenAI-compatible embeddings API:
+- Endpoint: http://127.0.0.1:3001/v1/embeddings
+- Compatible with OpenAI embeddings request format
+- Transforms requests for SAP AI Core compatibility
+
 ## Overview
 `sap-ai-core-llm-proxy` is a Python-based project that includes functionalities for token management, forwarding requests to the SAP AI Core API, and handling responses. The project uses Flask to implement the proxy server.
 
 Now it supports the following LLM models
-- OpenAI: gpt-4o, gpt-4.1, gpt-o3-mini
+- OpenAI: gpt-4o, gpt-4.1, gpt-o3-mini, gpt-o3, gpt-o4-mini
 - Claude: 3.5-sonnet, 3.7-sonnet, 4-sonnet
 - Google Gemini: gemini-2.5-pro
 
@@ -65,6 +78,8 @@ Now it supports the following LLM models
 - **Load Balance**: Support the load balancing across multiple subAccounts and deployments.
 - **Multi-subAccount Support**: Distribute requests across multiple SAP AI Core subAccounts.
 - **Model Management**: List available models and handle model-specific requests.
+- **OpenAI Embeddings API**: Support for text embedding functionality through the `/v1/embeddings` endpoint.
+- **Debug Mode**: Enhanced logging capabilities with `--debug` command line flag for detailed troubleshooting.
 
 ## Prerequisites
 - Python 3.x
