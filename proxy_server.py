@@ -1300,7 +1300,7 @@ def handle_default_request(payload, model="gpt-4o"):
             raise ValueError(f"No valid model found for '{model}' or fallback in any subAccount")
     
     # Determine API version based on model
-    if "o3-mini" in model:
+    if any(m in model for m in ["o3", "o4-mini", "o3-mini"]):
         api_version = "2024-12-01-preview"
         # Remove unsupported parameters for o3-mini
         modified_payload = payload.copy()
