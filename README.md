@@ -231,6 +231,8 @@ You:
 ## Cursor(AI IDE) Integration with SAP AI Core
 You can run the proxy_server in your public server, then you can update the base_url in the Cursor model settings.
 **Now ONLY gpt-4o supported**
+Check the details
+- https://forum.cursor.com/t/custom-api-keys-fail-with-the-model-does-not-work-with-your-current-plan-or-api-key/97422
 
 ## Cline Integration with SAP AI Core
 You can integrate the SAP AI Core with Cline
