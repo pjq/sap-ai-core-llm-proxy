@@ -88,6 +88,71 @@ proxy_config = ProxyConfig()
 
 app = Flask(__name__)
 
+@app.route('/v1/embeddings', methods=['POST'])
+def handle_embedding_request():
+    logging.info("Received request to /v1/embeddings")
+    if not verify_request_token(request):
+        return jsonify({"error": "Unauthorized"}), 401
+    
+    payload = request.json
+    input_text = payload.get("input")
+    model = payload.get("model", "text-embedding-3-large")
+    encoding_format = payload.get("encoding_format")
+
+    if not input_text:
+        return jsonify({"error": "Input text is required"}), 400
+
+    try:
+        endpoint_url, modified_payload, subaccount_name = handle_embedding_service_call(input_text, model, encoding_format)
+        subaccount_token = fetch_token(subaccount_name)
+        subaccount = proxy_config.subaccounts[subaccount_name]
+        resource_group = subaccount.resource_group
+        service_key = subaccount.service_key
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {subaccount_token}",
+            "AI-Resource-Group": resource_group,
+            "AI-Tenant-Id": service_key.identityzoneid
+        }
+        response = requests.post(endpoint_url, headers=headers, json=modified_payload)
+        response.raise_for_status()
+        return jsonify(format_embedding_response(response.json(), model)), 200
+    except Exception as e:
+        logging.error(f"Error handling embedding request: {e}")
+        return jsonify({"error": str(e)}), 500
+
+def handle_embedding_service_call(input_text, model, encoding_format):
+    # Logic to prepare the request to SAP AI Core
+    selected_url, subaccount_name, _ = load_balance_url(model)
+    
+    # Construct the URL based on the official SAP AI Core documentation
+    api_version = "2023-05-15"
+    endpoint_url = f"{selected_url.rstrip('/')}/embeddings?api-version={api_version}"
+    
+    # The payload for the embeddings endpoint only requires the input.
+    modified_payload = {"input": input_text}
+        
+    return endpoint_url, modified_payload, subaccount_name
+
+def format_embedding_response(response, model):
+    # Logic to convert the response to OpenAI format
+    embedding_data = response.get("embedding", [])
+    return {
+        "object": "list",
+        "data": [
+            {
+                "object": "embedding",
+                "embedding": embedding_data,
+                "index": 0
+            }
+        ],
+        "model": model,
+        "usage": {
+            "prompt_tokens": len(embedding_data),
+            "total_tokens": len(embedding_data)
+        }
+    }
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
