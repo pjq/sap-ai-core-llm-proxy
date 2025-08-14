@@ -176,8 +176,45 @@ if __name__ == "__main__":
     # Run all tests
     # run_all_tests()
 
+def demo_request_claude():
+    """Test the dedicated Claude endpoint."""
+    url = "http://127.0.0.1:3001/claude/chat/completions"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {config['secret_authentication_tokens'][0]}"
+    }
+    payload = {
+        "messages": [
+            {
+                "role": "user",
+                "content": "Hello, who are you?"
+            }
+        ],
+        "max_tokens": 100,
+        "temperature": 0.0,
+        "frequency_penalty": 0,
+        "presence_penalty": 0,
+        "stop": None
+        # No model specified, should default to a claude model
+    }
+
+    logging.info(f"Sending demo request to Claude endpoint: {url} with payload: {payload}")
+    response = requests.post(url, headers=headers, json=payload)
+    try:
+        response.raise_for_status()
+        logging.info("Claude demo request succeeded.")
+        print("=== Claude API Response ===")
+        print(json.dumps(response.json(), indent=2))
+    except requests.exceptions.HTTPError as err:
+        logging.error(f"HTTP error occurred during Claude demo request: {err}")
+        print(f"Error response: {response.text}")
+    except Exception as err:
+        logging.error(f"An error occurred during Claude demo request: {err}")
+
+
 # Individual test functions (uncomment to run specific tests)
 # demo_request()
 # demo_request_stream()
 # demo_request_gemini_stream()
 # test_list_models()
+# demo_request_claude()
