@@ -296,22 +296,23 @@ def fetch_token(subaccount_name: str) -> str:
             raise RuntimeError(f"Unexpected error processing token response for '{subaccount_name}': {err}") from err
 
 def verify_request_token(request):
-    """Verifies the Authorization header from the incoming client request."""
-    token = request.headers.get("Authorization")
+    """Verifies the Authorization or x-api-key header from the incoming client request."""
+    token = request.headers.get("Authorization") or request.headers.get("x-api-key")
     logging.info(f"verify_request_token, Token received in request: {token[:15]}..." if token and len(token) > 15 else token)
-    
+
     if not proxy_config.secret_authentication_tokens:
         logging.warning("Client authentication disabled - no tokens configured.")
         return True
-        
+
     if not token:
-        logging.error("Missing token in request.")
+        logging.error("Missing token in request. Checked Authorization and x-api-key headers.")
         return False
-        
+
+    # The check `secret_key in token` handles both "Bearer <token>" and just "<token>"
     if not any(secret_key in token for secret_key in proxy_config.secret_authentication_tokens):
         logging.error("Invalid token - no matching token found.")
         return False
-        
+
     logging.debug("Client token verified successfully.")
     return True
 
@@ -443,6 +444,85 @@ def convert_openai_to_claude37(payload):
 
     logging.debug(f"Converted Claude 3.7 payload: {json.dumps(claude_payload, indent=2)}")
     return claude_payload
+
+
+def convert_claude_request_to_openai(payload):
+    """Converts a Claude Messages API request to an OpenAI Chat Completion request."""
+    logging.debug(f"Original Claude payload for OpenAI conversion: {json.dumps(payload, indent=2)}")
+
+    openai_messages = []
+    if "system" in payload and payload["system"]:
+        openai_messages.append({"role": "system", "content": payload["system"]})
+
+    openai_messages.extend(payload.get("messages", []))
+
+    openai_payload = {
+        "model": payload.get("model"),
+        "messages": openai_messages,
+    }
+
+    if "max_tokens" in payload:
+        openai_payload["max_tokens"] = payload["max_tokens"]
+    if "temperature" in payload:
+        openai_payload["temperature"] = payload["temperature"]
+    if "stream" in payload:
+        openai_payload["stream"] = payload["stream"]
+
+    logging.debug(f"Converted OpenAI payload: {json.dumps(openai_payload, indent=2)}")
+    return openai_payload
+
+
+def convert_claude_request_to_gemini(payload):
+    """Converts a Claude Messages API request to a Google Gemini request."""
+    logging.debug(f"Original Claude payload for Gemini conversion: {json.dumps(payload, indent=2)}")
+
+    gemini_contents = []
+    system_prompt = payload.get("system", "")
+
+    claude_messages = payload.get("messages", [])
+
+    if system_prompt and claude_messages and claude_messages[0]["role"] == "user":
+        first_user_content = claude_messages[0]["content"]
+        if isinstance(first_user_content, list):
+            first_user_content_text = " ".join(c.get("text", "") for c in first_user_content if c.get("type") == "text")
+        else:
+            first_user_content_text = first_user_content
+
+        claude_messages[0]["content"] = f"{system_prompt}\\n\\n{first_user_content_text}"
+
+    for message in claude_messages:
+        role = "user" if message["role"] == "user" else "model"
+
+        if isinstance(message["content"], list):
+            content_text = " ".join(c.get("text", "") for c in message["content"] if c.get("type") == "text")
+        else:
+            content_text = message["content"]
+
+        if gemini_contents and gemini_contents[-1]["role"] == role:
+            gemini_contents[-1]["parts"]["text"] += f"\\n\\n{content_text}"
+        else:
+            gemini_contents.append({
+                "role": role,
+                "parts": {"text": content_text}
+            })
+
+    gemini_payload = {
+        "contents": gemini_contents,
+        "generation_config": {},
+        "safety_settings": {
+            "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+            "threshold": "BLOCK_LOW_AND_ABOVE"
+        }
+    }
+
+    if "max_tokens" in payload:
+        gemini_payload["generation_config"]["maxOutputTokens"] = payload["max_tokens"]
+    if "temperature" in payload:
+        gemini_payload["generation_config"]["temperature"] = payload["temperature"]
+
+    logging.debug(f"Converted Gemini payload: {json.dumps(gemini_payload, indent=2)}")
+    return gemini_payload
+
 
 def convert_claude_to_openai(response, model):
     # Check if the model is Claude 3.7 or 4
@@ -1037,6 +1117,174 @@ def convert_gemini_to_openai(response, model_name="gemini-pro"):
             "code": None
         }
 
+
+def convert_gemini_response_to_claude(response, model_name="gemini-pro"):
+    """
+    Converts a Gemini generateContent API response payload (non-streaming)
+    to the format expected by the Anthropic Claude Messages API.
+    """
+    try:
+        logging.debug(f"Raw response from Gemini API for Claude conversion: {json.dumps(response, indent=2)}")
+
+        if not isinstance(response, dict) or "candidates" not in response or not response["candidates"]:
+            raise ValueError("Invalid Gemini response: 'candidates' field is missing or empty")
+
+        first_candidate = response["candidates"][0]
+        content_parts = first_candidate.get("content", {}).get("parts", [])
+        if not content_parts or "text" not in content_parts[0]:
+            raise ValueError("Invalid Gemini response: text content not found in 'parts'")
+
+        content_text = content_parts[0]["text"]
+
+        # Map Gemini finishReason to Claude stop_reason
+        gemini_finish_reason = first_candidate.get("finishReason", "STOP")
+        stop_reason_map = {
+            "STOP": "end_turn",
+            "MAX_TOKENS": "max_tokens",
+            "SAFETY": "stop_sequence",
+            "RECITATION": "stop_sequence",
+            "OTHER": "stop_sequence"
+        }
+        claude_stop_reason = stop_reason_map.get(gemini_finish_reason, "stop_sequence")
+
+        # Extract usage
+        usage_metadata = response.get("usageMetadata", {})
+        prompt_tokens = usage_metadata.get("promptTokenCount", 0)
+        completion_tokens = usage_metadata.get("candidatesTokenCount", 0)
+
+        claude_response = {
+            "id": f"msg_gemini_{random.randint(10000, 99999)}",
+            "type": "message",
+            "role": "assistant",
+            "model": model_name,
+            "content": [{"type": "text", "text": content_text}],
+            "stop_reason": claude_stop_reason,
+            "usage": {
+                "input_tokens": prompt_tokens,
+                "output_tokens": completion_tokens
+            }
+        }
+        logging.debug(f"Converted Gemini response to Claude format: {json.dumps(claude_response, indent=2)}")
+        return claude_response
+
+    except Exception as e:
+        logging.error(f"Error converting Gemini response to Claude format: {e}", exc_info=True)
+        return {
+            "type": "error",
+            "error": {
+                "type": "proxy_conversion_error",
+                "message": f"Failed to convert Gemini response to Claude format: {str(e)}"
+            }
+        }
+
+
+def convert_openai_response_to_claude(response):
+    """
+    Converts an OpenAI Chat Completion API response payload (non-streaming)
+    to the format expected by the Anthropic Claude Messages API.
+    """
+    try:
+        logging.debug(f"Raw response from OpenAI API for Claude conversion: {json.dumps(response, indent=2)}")
+
+        if not isinstance(response, dict) or "choices" not in response or not response["choices"]:
+            raise ValueError("Invalid OpenAI response: 'choices' field is missing or empty")
+
+        first_choice = response["choices"][0]
+        content_text = first_choice.get("message", {}).get("content")
+        if content_text is None:
+            raise ValueError("Invalid OpenAI response: content not found in 'message'")
+
+        # Map OpenAI finish_reason to Claude stop_reason
+        openai_finish_reason = first_choice.get("finish_reason")
+        stop_reason_map = {
+            "stop": "end_turn",
+            "length": "max_tokens",
+            "content_filter": "stop_sequence",
+            "tool_calls": "tool_use",
+        }
+        claude_stop_reason = stop_reason_map.get(openai_finish_reason, "stop_sequence")
+
+        # Extract usage
+        usage = response.get("usage", {})
+        prompt_tokens = usage.get("prompt_tokens", 0)
+        completion_tokens = usage.get("completion_tokens", 0)
+
+        claude_response = {
+            "id": response.get("id", f"msg_openai_{random.randint(10000, 99999)}"),
+            "type": "message",
+            "role": "assistant",
+            "model": response.get("model", "unknown_openai_model"),
+            "content": [{"type": "text", "text": content_text}],
+            "stop_reason": claude_stop_reason,
+            "usage": {
+                "input_tokens": prompt_tokens,
+                "output_tokens": completion_tokens
+            }
+        }
+        logging.debug(f"Converted OpenAI response to Claude format: {json.dumps(claude_response, indent=2)}")
+        return claude_response
+
+    except Exception as e:
+        logging.error(f"Error converting OpenAI response to Claude format: {e}", exc_info=True)
+        return {
+            "type": "error",
+            "error": {
+                "type": "proxy_conversion_error",
+                "message": f"Failed to convert OpenAI response to Claude format: {str(e)}"
+            }
+        }
+
+
+def convert_gemini_chunk_to_claude_delta(gemini_chunk):
+    """Extracts a Claude-formatted content delta from a Gemini streaming chunk."""
+    text_delta = gemini_chunk.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text")
+    if text_delta:
+        return {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "text_delta", "text": text_delta}
+        }
+    return None
+
+def get_claude_stop_reason_from_gemini_chunk(gemini_chunk):
+    """Extracts and maps the stop reason from a final Gemini chunk."""
+    finish_reason = gemini_chunk.get("candidates", [{}])[0].get("finishReason")
+    if finish_reason:
+        stop_reason_map = {
+            "STOP": "end_turn",
+            "MAX_TOKENS": "max_tokens",
+            "SAFETY": "stop_sequence",
+            "RECITATION": "stop_sequence",
+            "OTHER": "stop_sequence"
+        }
+        return stop_reason_map.get(finish_reason, "stop_sequence")
+    return None
+
+def convert_openai_chunk_to_claude_delta(openai_chunk):
+    """Extracts a Claude-formatted content delta from an OpenAI streaming chunk."""
+    text_delta = openai_chunk.get("choices", [{}])[0].get("delta", {}).get("content")
+    if text_delta:
+        return {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "text_delta", "text": text_delta}
+        }
+    return None
+
+def get_claude_stop_reason_from_openai_chunk(openai_chunk):
+    """Extracts and maps the stop reason from a final OpenAI chunk."""
+    finish_reason = openai_chunk.get("choices", [{}])[0].get("finish_reason")
+    if finish_reason:
+        stop_reason_map = {
+            "stop": "end_turn",
+            "length": "max_tokens",
+            "content_filter": "stop_sequence",
+            "tool_calls": "tool_use",
+        }
+        return stop_reason_map.get(finish_reason, "stop_sequence")
+    return None
+
+
 def convert_gemini_chunk_to_openai(gemini_chunk, model_name):
     """
     Converts a single Gemini streaming chunk to OpenAI-compatible SSE format.
@@ -1461,6 +1709,102 @@ def proxy_openai_stream():
         return jsonify({"error": str(err)}), 500
 
 
+@app.route('/v1/messages', methods=['POST'])
+def proxy_claude_request():
+    """Handles requests that are compatible with the Anthropic Claude Messages API."""
+    logging.info("Received request to /claude/v1/messages")
+    logging.debug(f"Request headers: {request.headers}")
+    logging.debug(f"Request body:\n{json.dumps(request.get_json(), indent=4)}")
+
+    if not verify_request_token(request):
+        return jsonify({
+            "type": "error",
+            "error": { "type": "authentication_error", "message": "Invalid API Key provided." }
+        }), 401
+
+    payload = request.json
+    model = payload.get("model")
+    if not model:
+        return jsonify({"type": "error", "error": {"type": "invalid_request_error", "message": "Missing 'model' parameter"}}), 400
+
+    is_stream = payload.get("stream", False)
+    logging.info(f"Claude API request for model: {model}, Streaming: {is_stream}")
+
+    try:
+        base_url, subaccount_name, resource_group = load_balance_url(model)
+        subaccount_token = fetch_token(subaccount_name)
+
+        # Convert incoming Claude payload to the format expected by the backend model
+        if is_gemini_model(model):
+            backend_payload = convert_claude_request_to_gemini(payload)
+            endpoint_path = f"/models/{model}:streamGenerateContent" if is_stream else f"/models/{model}:generateContent"
+        elif is_claude_model(model):
+            backend_payload = payload  # No conversion needed
+            if is_stream:
+                endpoint_path = "/converse-stream" if is_claude_37_or_4(model) else "/invoke-with-response-stream"
+            else:
+                endpoint_path = "/converse" if is_claude_37_or_4(model) else "/invoke"
+        else:  # Assume OpenAI-compatible
+            backend_payload = convert_claude_request_to_openai(payload)
+            api_version = "2024-12-01-preview" if any(m in model for m in ["o3", "o4-mini", "o3-mini"]) else "2023-05-15"
+            endpoint_path = f"/chat/completions?api-version={api_version}"
+
+        endpoint_url = f"{base_url.rstrip('/')}{endpoint_path}"
+
+        service_key = proxy_config.subaccounts[subaccount_name].service_key
+        headers = {
+            "AI-Resource-Group": resource_group,
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {subaccount_token}",
+            "AI-Tenant-Id": service_key.identityzoneid
+        }
+
+        for h in ['anthropic-version', 'anthropic-beta']:
+            if h in request.headers:
+                headers[h] = request.headers[h]
+
+        logging.info(f"Forwarding converted request to {endpoint_url} for subAccount '{subaccount_name}'")
+
+        if not is_stream:
+            backend_response = requests.post(endpoint_url, headers=headers, json=backend_payload, timeout=600)
+            backend_response.raise_for_status()
+            backend_json = backend_response.json()
+
+            if is_gemini_model(model):
+                final_response = convert_gemini_response_to_claude(backend_json, model)
+            elif is_claude_model(model):
+                final_response = backend_json
+            else:
+                final_response = convert_openai_response_to_claude(backend_json)
+
+            
+            # Log the response for debug purposes
+            logging.info(f"Final response to client: {json.dumps(final_response, indent=2)}")
+
+
+            return jsonify(final_response), backend_response.status_code
+        else:
+            return Response(
+                stream_with_context(generate_claude_streaming_response(
+                    endpoint_url, headers, backend_payload, model, subaccount_name
+                )),
+                content_type='text/event-stream'
+            )
+
+    except ValueError as err:
+        logging.error(f"Value error during Claude request handling: {err}")
+        return jsonify({"type": "error", "error": {"type": "invalid_request_error", "message": str(err)}}), 400
+    except requests.exceptions.HTTPError as err:
+        logging.error(f"HTTP error in Claude request: {err}")
+        try:
+            return jsonify(err.response.json()), err.response.status_code
+        except:
+            return jsonify({"error": str(err)}), err.response.status_code if err.response else 500
+    except Exception as err:
+        logging.error(f"Unexpected error during Claude request handling: {err}", exc_info=True)
+        return jsonify({"type": "error", "error": {"type": "api_error", "message": "An unexpected error occurred."}}), 500
+
+
 def handle_non_streaming_request(url, headers, payload, model, subaccount_name):
     """Handle non-streaming request to backend API.
     
@@ -1773,6 +2117,84 @@ def generate_streaming_response(url, headers, payload, model, subaccount_name):
             # Use strings directly without referencing chunk to avoid errors
             yield f"data: {json.dumps(error_payload)}\n\n"
             yield "data: [DONE]\n\n"
+
+
+def generate_claude_streaming_response(url, headers, payload, model, subaccount_name):
+    """
+    Generates a streaming response in the Anthropic Claude Messages API format.
+    If the backend is a Claude model, it passes the stream through.
+    If the backend is Gemini or OpenAI, it converts their SSE stream to Claude's format.
+    """
+    logging.info(f"Forwarding payload to API (Claude streaming): {json.dumps(payload, indent=2)}")
+
+    # If the backend is already a Claude model, just pass the stream through.
+    if is_claude_model(model):
+        with requests.post(url, headers=headers, json=payload, stream=True, timeout=600) as response:
+            response.raise_for_status()
+            for chunk in response.iter_content(chunk_size=None):
+                yield chunk
+        return
+
+    # For other models, we need to convert the stream to Claude's event format.
+    # 1. Send message_start event
+    message_start_data = {
+        "type": "message_start",
+        "message": {
+            "id": f"msg_{random.randint(10000, 99999)}", "type": "message", "role": "assistant",
+            "content": [], "model": model, "stop_reason": None, "stop_sequence": None,
+            "usage": {"input_tokens": 0, "output_tokens": 0}
+        }
+    }
+    yield f"event: message_start\ndata: {json.dumps(message_start_data)}\n\n".encode('utf-8')
+
+    # 2. Send content_block_start event
+    content_block_start_data = {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}
+    yield f"event: content_block_start\ndata: {json.dumps(content_block_start_data)}\n\n".encode('utf-8')
+
+    stop_reason = None
+
+    with requests.post(url, headers=headers, json=payload, stream=True, timeout=600) as response:
+        response.raise_for_status()
+
+        # 3. Iterate and yield content_block_delta events
+        for line in response.iter_lines():
+            if not line or not line.strip().startswith(b'data:'):
+                continue
+
+            line_str = line.decode('utf-8', errors='ignore')[5:].strip()
+            if line_str == "[DONE]":
+                break
+
+            try:
+                backend_chunk = json.loads(line_str)
+
+                claude_delta = None
+                if is_gemini_model(model):
+                    claude_delta = convert_gemini_chunk_to_claude_delta(backend_chunk)
+                    if not stop_reason: stop_reason = get_claude_stop_reason_from_gemini_chunk(backend_chunk)
+                else:  # Assume OpenAI-compatible
+                    claude_delta = convert_openai_chunk_to_claude_delta(backend_chunk)
+                    if not stop_reason: stop_reason = get_claude_stop_reason_from_openai_chunk(backend_chunk)
+
+                if claude_delta:
+                    yield f"event: content_block_delta\ndata: {json.dumps(claude_delta)}\n\n".encode('utf-8')
+
+            except json.JSONDecodeError:
+                logging.warning(f"Could not decode JSON from stream chunk: {line_str}")
+                continue
+
+    # 4. Send stop events
+    yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': 0})}\n\n".encode('utf-8')
+
+    message_delta_data = {
+        "type": "message_delta",
+        "delta": {"stop_reason": stop_reason or "end_turn", "stop_sequence": None},
+        "usage": {"output_tokens": 0}  # Token usage is not available in most streams
+    }
+    yield f"event: message_delta\ndata: {json.dumps(message_delta_data)}\n\n".encode('utf-8')
+
+    yield f"event: message_stop\ndata: {json.dumps({'type': 'message_stop'})}\n\n".encode('utf-8')
+
 
 if __name__ == '__main__':
     args = parse_arguments()
