@@ -187,7 +187,43 @@ python proxy_server.py
 ```
 The server will run on `http://127.0.0.1:3001`.
 
-### Running the Proxy Server over HTTPS
+### Anthropic Claude Messages API Compatibility
+
+The proxy server provides full compatibility with the Anthropic Claude Messages API through the `/v1/messages` endpoint. This allows you to use any application that supports the Claude Messages API directly with SAP AI Core.
+- **Endpoint**: `http://127.0.0.1:3001/v1/messages`
+
+### Supported Features
+- **Non-streaming requests**: Standard request/response format
+- **Streaming requests**: Server-sent events (SSE) with `"stream": true`
+- **Multi-model support**: Works with Claude, GPT, and Gemini models deployed in SAP AI Core
+- **Tool use**: Support for function calling and tool usage
+- **System messages**: Support for system prompts
+- **Multi-turn conversations**: Full conversation history support
+
+### Compatible Applications
+Any application that supports the Anthropic Claude Messages API can now work with SAP AI Core through this proxy, including:
+- Claude Code
+- Claude SDK
+- Anthropic API clients
+- Custom applications using the Messages API format
+
+### Claude Code
+You need to set the enviroment variables before run the claude code.
+```shell
+export ANTHROPIC_AUTH_TOKEN=your_secret_key
+export ANTHROPIC_BASE_URL=http://127.0.0.1:3001
+export ANTHROPIC_MODEL=4-sonnet
+```
+
+Then run the claude code
+```shell
+claude
+```
+
+Issues:
+- The function tool call still doesn't work for Claude Code.
+
+## Running the Proxy Server over HTTPS
 To run the proxy server over HTTPS, you need to generate SSL certificates. You can use the following command to generate a self-signed certificate and key:
 
 ```sh
