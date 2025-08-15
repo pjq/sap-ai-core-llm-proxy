@@ -124,7 +124,7 @@ def handle_embedding_request():
 
 def handle_embedding_service_call(input_text, model, encoding_format):
     # Logic to prepare the request to SAP AI Core
-    selected_url, subaccount_name, _ = load_balance_url(model)
+    selected_url, subaccount_name, _, model = load_balance_url(model)
     
     # Construct the URL based on the official SAP AI Core documentation
     api_version = "2023-05-15"
@@ -590,7 +590,7 @@ def convert_claude_request_for_bedrock(payload):
                         cleaned_content.append(content_item)
                 cleaned_message["content"] = cleaned_content
             else:
-                cleaned_message["content"] = message["content"]
+                cleaned_message["content"] = [{"type": "text", "text": message["content"]}]
             
             cleaned_messages.append(cleaned_message)
         bedrock_payload["messages"] = cleaned_messages
@@ -1494,7 +1494,7 @@ def load_balance_url(model_name: str) -> tuple:
         model_name: Name of the model to load balance
         
     Returns:
-        Tuple of (selected_url, subaccount_name, resource_group)
+        Tuple of (selected_url, subaccount_name, resource_group, final_model_name)
         
     Raises:
         ValueError: If no subAccounts have the requested model
@@ -1579,7 +1579,7 @@ def load_balance_url(model_name: str) -> tuple:
     resource_group = subaccount.resource_group
     
     logging.info(f"Selected subAccount '{selected_subaccount}' and URL '{selected_url}' for model '{model_name}'")
-    return selected_url, selected_subaccount, resource_group
+    return selected_url, selected_subaccount, resource_group, model_name
 
 def handle_claude_request(payload, model="3.5-sonnet"):
     """Handle Claude model request with multi-subAccount support.
@@ -1596,7 +1596,7 @@ def handle_claude_request(payload, model="3.5-sonnet"):
     
     # Get the selected URL, subaccount and resource group using our load balancer
     try:
-        selected_url, subaccount_name, _ = load_balance_url(model)
+        selected_url, subaccount_name, _, model = load_balance_url(model)
     except ValueError as e:
         logging.error(f"Failed to load balance URL for model '{model}': {e}")
         raise ValueError(f"No valid Claude model found for '{model}' in any subAccount")
@@ -1641,7 +1641,7 @@ def handle_gemini_request(payload, model="gemini-2.5-pro"):
     
     # Get the selected URL, subaccount and resource group using our load balancer
     try:
-        selected_url, subaccount_name, _ = load_balance_url(model)
+        selected_url, subaccount_name, _, model = load_balance_url(model)
     except ValueError as e:
         logging.error(f"Failed to load balance URL for model '{model}': {e}")
         raise ValueError(f"No valid Gemini model found for '{model}' in any subAccount")
@@ -1678,15 +1678,14 @@ def handle_default_request(payload, model="gpt-4o"):
     """
     # Get the selected URL, subaccount and resource group using our load balancer
     try:
-        selected_url, subaccount_name, _ = load_balance_url(model)
+        selected_url, subaccount_name, _, model = load_balance_url(model)
     except ValueError as e:
         logging.error(f"Failed to load balance URL for model '{model}': {e}")
         # Try with default model if specified model not found
         try:
             fallback_model = "gpt-4o"  # Default fallback
             logging.info(f"Falling back to '{fallback_model}' model")
-            selected_url, subaccount_name, _ = load_balance_url(fallback_model)
-            model = fallback_model  # Update model to the fallback
+            selected_url, subaccount_name, _, model = load_balance_url(fallback_model)
         except ValueError:
             raise ValueError(f"No valid model found for '{model}' or fallback in any subAccount")
     
@@ -1855,7 +1854,7 @@ def proxy_openai_stream():
 @app.route('/v1/messages', methods=['POST'])
 def proxy_claude_request():
     """Handles requests that are compatible with the Anthropic Claude Messages API."""
-    logging.info("Received request to /claude/v1/messages")
+    logging.info("Received request to /v1/messages")
     logging.debug(f"Request headers: {request.headers}")
     logging.debug(f"Request body:\n{json.dumps(request.get_json(), indent=4)}")
 
@@ -1874,7 +1873,7 @@ def proxy_claude_request():
     logging.info(f"Claude API request for model: {model}, Streaming: {is_stream}")
 
     try:
-        base_url, subaccount_name, resource_group = load_balance_url(model)
+        base_url, subaccount_name, resource_group, model = load_balance_url(model)
         subaccount_token = fetch_token(subaccount_name)
 
         # Convert incoming Claude payload to the format expected by the backend model
@@ -1902,9 +1901,21 @@ def proxy_claude_request():
             "AI-Tenant-Id": service_key.identityzoneid
         }
 
+        # Handle anthropic-specific headers
         for h in ['anthropic-version', 'anthropic-beta']:
             if h in request.headers:
                 headers[h] = request.headers[h]
+        
+        # Add default anthropic-beta header for Claude streaming if not already present
+        if is_claude_model(model) and is_stream:
+            existing_beta = request.headers.get('anthropic-beta', '')
+            if 'fine-grained-tool-streaming-2025-05-14' not in existing_beta:
+                if existing_beta:
+                    # Append to existing anthropic-beta header
+                    headers['anthropic-beta'] = f"{existing_beta},fine-grained-tool-streaming-2025-05-14"
+                else:
+                    # Set new anthropic-beta header
+                    headers['anthropic-beta'] = 'fine-grained-tool-streaming-2025-05-14'
 
         logging.info(f"Forwarding converted request to {endpoint_url} for subAccount '{subaccount_name}'")
 
