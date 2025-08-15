@@ -468,6 +468,21 @@ def convert_claude_request_to_openai(payload):
         openai_payload["temperature"] = payload["temperature"]
     if "stream" in payload:
         openai_payload["stream"] = payload["stream"]
+    if "tools" in payload and payload["tools"]:
+        # Convert Claude tools format to OpenAI tools format
+        openai_tools = []
+        for tool in payload["tools"]:
+            openai_tool = {
+                "type": "function",
+                "function": {
+                    "name": tool["name"],
+                    "description": tool["description"],
+                    "parameters": tool["input_schema"]
+                }
+            }
+            openai_tools.append(openai_tool)
+        openai_payload["tools"] = openai_tools
+        logging.debug(f"Converted {len(openai_tools)} tools for OpenAI format")
 
     logging.debug(f"Converted OpenAI payload: {json.dumps(openai_payload, indent=2)}")
     return openai_payload
@@ -520,9 +535,80 @@ def convert_claude_request_to_gemini(payload):
         gemini_payload["generation_config"]["maxOutputTokens"] = payload["max_tokens"]
     if "temperature" in payload:
         gemini_payload["generation_config"]["temperature"] = payload["temperature"]
+    if "tools" in payload and payload["tools"]:
+        # Convert Claude tools format to Gemini tools format
+        gemini_tools = []
+        for tool in payload["tools"]:
+            gemini_tool = {
+                "function_declarations": [{
+                    "name": tool["name"],
+                    "description": tool["description"],
+                    "parameters": tool["input_schema"]
+                }]
+            }
+            gemini_tools.append(gemini_tool)
+        gemini_payload["tools"] = gemini_tools
+        logging.debug(f"Converted {len(gemini_tools)} tools for Gemini format")
 
     logging.debug(f"Converted Gemini payload: {json.dumps(gemini_payload, indent=2)}")
     return gemini_payload
+
+
+def convert_claude_request_for_bedrock(payload):
+    """
+    Converts a Claude Messages API request to Bedrock Claude format.
+    Handles tools conversion for Bedrock compatibility.
+    """
+    logging.debug(f"Original Claude payload for Bedrock conversion: {json.dumps(payload, indent=2)}")
+    
+    bedrock_payload = {}
+    
+    # Copy basic fields
+    for field in ["model", "max_tokens", "temperature", "top_p", "top_k", "stop_sequences"]:
+        if field in payload:
+            bedrock_payload[field] = payload[field]
+    
+    # Handle system field - keep as array format
+    if "system" in payload:
+        bedrock_payload["system"] = payload["system"]
+    
+    # Handle messages - remove cache_control fields
+    if "messages" in payload:
+        cleaned_messages = []
+        for message in payload["messages"]:
+            cleaned_message = {"role": message["role"]}
+            
+            # Handle content
+            if isinstance(message["content"], list):
+                cleaned_content = []
+                for content_item in message["content"]:
+                    if isinstance(content_item, dict):
+                        # Remove cache_control field
+                        cleaned_item = {k: v for k, v in content_item.items() if k != "cache_control"}
+                        cleaned_content.append(cleaned_item)
+                    else:
+                        cleaned_content.append(content_item)
+                cleaned_message["content"] = cleaned_content
+            else:
+                cleaned_message["content"] = message["content"]
+            
+            cleaned_messages.append(cleaned_message)
+        bedrock_payload["messages"] = cleaned_messages
+    
+    # Handle tools conversion if present
+    if "tools" in payload and payload["tools"]:
+        bedrock_payload["tools"] = payload["tools"]
+        logging.debug(f"Tools present in request: {len(payload['tools'])} tools")
+    
+    # Handle anthropic_beta if present (but not in payload, should be in headers)
+    # Remove it from payload as it should be in headers only
+    
+    # Set anthropic_version if not present
+    if "anthropic_version" not in bedrock_payload:
+        bedrock_payload["anthropic_version"] = "bedrock-2023-05-31"
+    
+    logging.debug(f"Converted Bedrock Claude payload: {json.dumps(bedrock_payload, indent=2)}")
+    return bedrock_payload
 
 
 def convert_claude_to_openai(response, model):
@@ -1191,9 +1277,30 @@ def convert_openai_response_to_claude(response):
             raise ValueError("Invalid OpenAI response: 'choices' field is missing or empty")
 
         first_choice = response["choices"][0]
-        content_text = first_choice.get("message", {}).get("content")
-        if content_text is None:
-            raise ValueError("Invalid OpenAI response: content not found in 'message'")
+        message = first_choice.get("message", {})
+        content_text = message.get("content")
+        tool_calls = message.get("tool_calls", [])
+        
+        # Handle content based on whether there are tool calls
+        claude_content = []
+        if content_text:
+            claude_content.append({"type": "text", "text": content_text})
+        
+        # Convert OpenAI tool calls to Claude format
+        if tool_calls:
+            for tool_call in tool_calls:
+                if tool_call.get("type") == "function":
+                    function = tool_call.get("function", {})
+                    claude_tool_use = {
+                        "type": "tool_use",
+                        "id": tool_call.get("id", f"toolu_openai_{random.randint(10000, 99999)}"),
+                        "name": function.get("name"),
+                        "input": json.loads(function.get("arguments", "{}"))
+                    }
+                    claude_content.append(claude_tool_use)
+        
+        if not claude_content:
+            raise ValueError("Invalid OpenAI response: no content or tool calls found")
 
         # Map OpenAI finish_reason to Claude stop_reason
         openai_finish_reason = first_choice.get("finish_reason")
@@ -1215,7 +1322,7 @@ def convert_openai_response_to_claude(response):
             "type": "message",
             "role": "assistant",
             "model": response.get("model", "unknown_openai_model"),
-            "content": [{"type": "text", "text": content_text}],
+            "content": claude_content,
             "stop_reason": claude_stop_reason,
             "usage": {
                 "input_tokens": prompt_tokens,
@@ -1775,7 +1882,7 @@ def proxy_claude_request():
             backend_payload = convert_claude_request_to_gemini(payload)
             endpoint_path = f"/models/{model}:streamGenerateContent" if is_stream else f"/models/{model}:generateContent"
         elif is_claude_model(model):
-            backend_payload = payload  # No conversion needed
+            backend_payload = convert_claude_request_for_bedrock(payload)
             if is_stream:
                 endpoint_path = "/converse-stream" if is_claude_37_or_4(model) else "/invoke-with-response-stream"
             else:
