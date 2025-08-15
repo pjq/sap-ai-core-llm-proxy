@@ -296,20 +296,29 @@ def fetch_token(subaccount_name: str) -> str:
             raise RuntimeError(f"Unexpected error processing token response for '{subaccount_name}': {err}") from err
 
 def verify_request_token(request):
-    """Verifies the Authorization header from the incoming client request."""
-    token = request.headers.get("Authorization")
-    logging.info(f"verify_request_token, Token received in request: {token[:15]}..." if token and len(token) > 15 else token)
+    """Verifies the Authorization header or X-Api-Key header from the incoming client request."""
+    auth_token = request.headers.get("Authorization")
+    api_key = request.headers.get("X-Api-Key")
+    
+    logging.info(f"verify_request_token, Authorization token received: {auth_token[:15]}..." if auth_token and len(auth_token) > 15 else auth_token)
+    logging.info(f"verify_request_token, X-Api-Key received: {api_key[:15]}..." if api_key and len(api_key) > 15 else api_key)
+    
+    # Print request headers for debugging
+    for header_name, header_value in request.headers:
+        logging.info(f"Request header: {header_name}: {header_value}")
     
     if not proxy_config.secret_authentication_tokens:
         logging.warning("Client authentication disabled - no tokens configured.")
         return True
-        
-    if not token:
-        logging.error("Missing token in request.")
+    
+    # Check if either Authorization or X-Api-Key header is present
+    token_to_verify = auth_token or api_key
+    if not token_to_verify:
+        logging.error("Missing token in request - neither Authorization nor X-Api-Key header found.")
         return False
         
-    if not any(secret_key in token for secret_key in proxy_config.secret_authentication_tokens):
-        logging.error("Invalid token - no matching token found.")
+    if not any(secret_key in token_to_verify for secret_key in proxy_config.secret_authentication_tokens):
+        logging.error("Invalid token - no matching token found in either Authorization or X-Api-Key header.")
         return False
         
     logging.debug("Client token verified successfully.")
@@ -1235,6 +1244,66 @@ def handle_claude_request(payload, model="3.5-sonnet"):
     logging.info(f"handle_claude_request: {endpoint_url} (subAccount: {subaccount_name})")
     return endpoint_url, modified_payload, subaccount_name
 
+def is_claude_model(model):
+    return any(keyword in model for keyword in ["claude", "clau", "claud", "sonnet", "sonne", "sonn", "CLAUDE", "SONNET"])
+
+def is_claude_37_or_4(model):
+    """
+    Check if the model is Claude 3.7 or Claude 4.
+
+    Args:
+        model: The model name to check
+
+    Returns:
+        bool: True if the model is Claude 3.7 or Claude 4, False otherwise
+    """
+    return any(version in model for version in ["3.7", "4"]) or "3.5" not in model
+
+def handle_claude_request(payload, model="3.5-sonnet"):
+    """Handle Claude model request with multi-subAccount support.
+
+    Args:
+        payload: Request payload from client
+        model: The model name to use
+
+    Returns:
+        Tuple of (endpoint_url, modified_payload, subaccount_name)
+    """
+    stream = payload.get("stream", True)
+    logging.info(f"handle_claude_request: model={model} stream={stream}")
+
+    # Get the selected URL, subaccount and resource group using our load balancer
+    try:
+        selected_url, subaccount_name, _ = load_balance_url(model)
+    except ValueError as e:
+        logging.error(f"Failed to load balance URL for model '{model}': {e}")
+        raise ValueError(f"No valid Claude model found for '{model}' in any subAccount")
+
+    # Determine the endpoint path based on model and streaming settings
+    if stream:
+        # Check if the model is Claude 3.7 or 4 for streaming endpoint
+        if is_claude_37_or_4(model):
+            endpoint_path = "/converse-stream"
+        else:
+            endpoint_path = "/invoke-with-response-stream"
+    else:
+        # Check if the model is Claude 3.7 or 4
+        if is_claude_37_or_4(model):
+            endpoint_path = "/converse"
+        else:
+            endpoint_path = "/invoke"
+
+    endpoint_url = f"{selected_url.rstrip('/')}{endpoint_path}"
+
+    # Convert the payload to the right format
+    if is_claude_37_or_4(model):
+        modified_payload = convert_openai_to_claude37(payload)
+    else:
+        modified_payload = convert_openai_to_claude(payload)
+
+    logging.info(f"handle_claude_request: {endpoint_url} (subAccount: {subaccount_name})")
+    return endpoint_url, modified_payload, subaccount_name
+
 def handle_gemini_request(payload, model="gemini-2.5-pro"):
     """Handle Gemini model request with multi-subAccount support.
     
@@ -1382,6 +1451,82 @@ def list_models():
     return jsonify({"object": "list", "data": models}), 200
 
 content_type="Application/json"
+@app.route('/v1/messages', methods=['POST'])
+def proxy_claude_chat_completions():
+    """Handler for Claude-specific chat completions."""
+    logging.info("Received request to /v1/messages")
+    logging.debug(f"Request headers: {request.headers}")
+    logging.debug(f"Request body:\n{json.dumps(request.get_json(), indent=4)}")
+
+    # Verify client authentication token
+    if not verify_request_token(request):
+        logging.info("Unauthorized request received. Token verification failed.")
+        return jsonify({"error": "Unauthorized"}), 401
+
+    # Extract model from the request payload
+    payload = request.json
+    model = payload.get("model")
+    if not model or not is_claude_model(model):
+        logging.warning(f"No Claude model specified or model is not a Claude model, using default '3.5-sonnet'")
+        model = "3.5-sonnet"  # Default Claude model
+        payload["model"] = model
+
+    # Check if model is available in any subAccount
+    if model not in proxy_config.model_to_subaccounts:
+        logging.warning(f"Model '{model}' not found in any subAccount, falling back to default '3.5-sonnet'")
+        model = "3.5-sonnet"  # Fallback Claude model
+        payload["model"] = model
+        if model not in proxy_config.model_to_subaccounts:
+            return jsonify({"error": f"Default Claude model '{model}' not available in any subAccount."}), 404
+
+    # Check streaming mode
+    is_stream = payload.get("stream", False)
+    logging.info(f"Model: {model}, Streaming: {is_stream}")
+
+    try:
+        # Handle request using the Claude-specific handler
+        endpoint_url, modified_payload, subaccount_name = handle_claude_request(payload, model)
+
+        # Get token for the selected subAccount
+        subaccount_token = fetch_token(subaccount_name)
+
+        # Get resource group for the selected subAccount
+        resource_group = proxy_config.subaccounts[subaccount_name].resource_group
+
+        # Get service key for tenant ID
+        service_key = proxy_config.subaccounts[subaccount_name].service_key
+
+        # Prepare headers for the backend request
+        headers = {
+            "AI-Resource-Group": resource_group,
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {subaccount_token}",
+            "AI-Tenant-Id": service_key.identityzoneid
+        }
+
+        logging.info(f"Forwarding Claude request to {endpoint_url} with subAccount '{subaccount_name}'")
+
+        # Handle non-streaming requests
+        if not is_stream:
+            return handle_non_streaming_request(endpoint_url, headers, modified_payload, model, subaccount_name)
+
+        # Handle streaming requests
+        return Response(
+            stream_with_context(generate_streaming_response(
+                endpoint_url, headers, modified_payload, model, subaccount_name
+            )),
+            content_type='text/event-stream'
+        )
+
+    except ValueError as err:
+        logging.error(f"Value error during Claude request handling: {err}")
+        return jsonify({"error": str(err)}), 400
+
+    except Exception as err:
+        logging.error(f"Unexpected error during Claude request handling: {err}", exc_info=True)
+        return jsonify({"error": str(err)}), 500
+
+
 @app.route('/v1/chat/completions', methods=['POST'])
 def proxy_openai_stream():
     """Main handler for chat completions endpoint with multi-subAccount support."""
