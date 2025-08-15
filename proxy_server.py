@@ -296,20 +296,29 @@ def fetch_token(subaccount_name: str) -> str:
             raise RuntimeError(f"Unexpected error processing token response for '{subaccount_name}': {err}") from err
 
 def verify_request_token(request):
-    """Verifies the Authorization header from the incoming client request."""
-    token = request.headers.get("Authorization")
-    logging.info(f"verify_request_token, Token received in request: {token[:15]}..." if token and len(token) > 15 else token)
+    """Verifies the Authorization header or X-Api-Key header from the incoming client request."""
+    auth_token = request.headers.get("Authorization")
+    api_key = request.headers.get("X-Api-Key")
+    
+    logging.info(f"verify_request_token, Authorization token received: {auth_token[:15]}..." if auth_token and len(auth_token) > 15 else auth_token)
+    logging.info(f"verify_request_token, X-Api-Key received: {api_key[:15]}..." if api_key and len(api_key) > 15 else api_key)
+    
+    # Print request headers for debugging
+    for header_name, header_value in request.headers:
+        logging.info(f"Request header: {header_name}: {header_value}")
     
     if not proxy_config.secret_authentication_tokens:
         logging.warning("Client authentication disabled - no tokens configured.")
         return True
-        
-    if not token:
-        logging.error("Missing token in request.")
+    
+    # Check if either Authorization or X-Api-Key header is present
+    token_to_verify = auth_token or api_key
+    if not token_to_verify:
+        logging.error("Missing token in request - neither Authorization nor X-Api-Key header found.")
         return False
         
-    if not any(secret_key in token for secret_key in proxy_config.secret_authentication_tokens):
-        logging.error("Invalid token - no matching token found.")
+    if not any(secret_key in token_to_verify for secret_key in proxy_config.secret_authentication_tokens):
+        logging.error("Invalid token - no matching token found in either Authorization or X-Api-Key header.")
         return False
         
     logging.debug("Client token verified successfully.")
@@ -1442,10 +1451,10 @@ def list_models():
     return jsonify({"object": "list", "data": models}), 200
 
 content_type="Application/json"
-@app.route('/claude/chat/completions', methods=['POST'])
+@app.route('/v1/messages', methods=['POST'])
 def proxy_claude_chat_completions():
     """Handler for Claude-specific chat completions."""
-    logging.info("Received request to /claude/chat/completions")
+    logging.info("Received request to /v1/messages")
     logging.debug(f"Request headers: {request.headers}")
     logging.debug(f"Request body:\n{json.dumps(request.get_json(), indent=4)}")
 
