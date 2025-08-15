@@ -10,6 +10,7 @@ import os
 from datetime import datetime
 import argparse
 import re
+import ast
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any
 
@@ -462,7 +463,7 @@ def convert_claude_request_to_openai(payload):
     }
 
     if "max_tokens" in payload:
-        openai_payload["max_tokens"] = payload["max_tokens"]
+        openai_payload["max_completion_tokens"] = payload["max_tokens"]
     if "temperature" in payload:
         openai_payload["temperature"] = payload["temperature"]
     if "stream" in payload:
@@ -1397,8 +1398,43 @@ def load_balance_url(model_name: str) -> tuple:
     
     # Get list of subAccounts that have this model
     if model_name not in proxy_config.model_to_subaccounts or not proxy_config.model_to_subaccounts[model_name]:
-        logging.error(f"No subAccounts with model '{model_name}' found")
-        raise ValueError(f"Model '{model_name}' not available in any subAccount")
+        # Check if it's a Claude or Gemini model and try fallback
+        if is_claude_model(model_name):
+            logging.warning(f"Claude model '{model_name}' not found, trying fallback models")
+            # Try common Claude model fallbacks
+            fallback_models = ["4-sonnet"]
+            for fallback in fallback_models:
+                if fallback in proxy_config.model_to_subaccounts and proxy_config.model_to_subaccounts[fallback]:
+                    logging.info(f"Using fallback Claude model '{fallback}' for '{model_name}'")
+                    model_name = fallback
+                    break
+            else:
+                logging.error(f"No Claude models available in any subAccount")
+                raise ValueError(f"Claude model '{model_name}' and fallbacks not available in any subAccount")
+        elif is_gemini_model(model_name):
+            logging.warning(f"Gemini model '{model_name}' not found, trying fallback models")
+            # Try common Gemini model fallbacks
+            fallback_models = ["gemini-2.5-pro"]
+            for fallback in fallback_models:
+                if fallback in proxy_config.model_to_subaccounts and proxy_config.model_to_subaccounts[fallback]:
+                    logging.info(f"Using fallback Gemini model '{fallback}' for '{model_name}'")
+                    model_name = fallback
+                    break
+            else:
+                logging.error(f"No Gemini models available in any subAccount")
+                raise ValueError(f"Gemini model '{model_name}' and fallbacks not available in any subAccount")
+        else:
+            # For other models, try common fallbacks
+            logging.warning(f"Model '{model_name}' not found, trying fallback models")
+            fallback_models = ["gpt-5"]
+            for fallback in fallback_models:
+                if fallback in proxy_config.model_to_subaccounts and proxy_config.model_to_subaccounts[fallback]:
+                    logging.info(f"Using fallback model '{fallback}' for '{model_name}'")
+                    model_name = fallback
+                    break
+            else:
+                logging.error(f"No subAccounts with model '{model_name}' or fallbacks found")
+                raise ValueError(f"Model '{model_name}' and fallbacks not available in any subAccount")
     
     subaccount_names = proxy_config.model_to_subaccounts[model_name]
     
@@ -1906,7 +1942,6 @@ def generate_streaming_response(url, headers, payload, model, subaccount_name):
                         if line.startswith("data: "):
                             line_content = line.replace("data: ", "").strip()
                             # logging.info(f"Raw data chunk from Claude API: {line_content}")
-                            import ast
                             try:
                                 line_content = ast.literal_eval(line_content)
                                 line_content = json.dumps(line_content)
@@ -2125,17 +2160,123 @@ def generate_claude_streaming_response(url, headers, payload, model, subaccount_
     If the backend is a Claude model, it passes the stream through.
     If the backend is Gemini or OpenAI, it converts their SSE stream to Claude's format.
     """
-    logging.info(f"Forwarding payload to API (Claude streaming): {json.dumps(payload, indent=2)}")
+    logging.info(f"Starting Claude streaming response for model '{model}' using subAccount '{subaccount_name}'")
+    logging.debug(f"Forwarding payload to API (Claude streaming): {json.dumps(payload, indent=2)}")
+    logging.debug(f"Request URL: {url}")
+    logging.debug(f"Request headers: {headers}")
 
-    # If the backend is already a Claude model, just pass the stream through.
+    # If the backend is already a Claude model, we need to convert the response format.
     if is_claude_model(model):
-        with requests.post(url, headers=headers, json=payload, stream=True, timeout=600) as response:
-            response.raise_for_status()
-            for chunk in response.iter_content(chunk_size=None):
-                yield chunk
+        logging.info(f"Backend is Claude model, converting response format for '{model}'")
+        try:
+            with requests.post(url, headers=headers, json=payload, stream=True, timeout=600) as response:
+                response.raise_for_status()
+                logging.debug(f"Claude backend response status: {response.status_code}")
+                
+                # Send message_start event
+                message_start_data = {
+                    "type": "message_start",
+                    "message": {
+                        "id": f"msg_{random.randint(10000, 99999)}", 
+                        "type": "message", 
+                        "role": "assistant",
+                        "content": [], 
+                        "model": model, 
+                        "stop_reason": None, 
+                        "stop_sequence": None,
+                        "usage": {"input_tokens": 0, "output_tokens": 0}
+                    }
+                }
+                message_start_event = f"event: message_start\ndata: {json.dumps(message_start_data)}\n\n"
+                yield message_start_event.encode('utf-8')
+
+                # Send content_block_start event
+                content_block_start_data = {
+                    "type": "content_block_start", 
+                    "index": 0, 
+                    "content_block": {"type": "text", "text": ""}
+                }
+                content_block_start_event = f"event: content_block_start\ndata: {json.dumps(content_block_start_data)}\n\n"
+                yield content_block_start_event.encode('utf-8')
+                
+                chunk_count = 0
+                stop_reason = None
+                
+                for line in response.iter_lines():
+                    chunk_count += 1
+                    if not line:
+                        continue
+                        
+                    line_str = line.decode('utf-8', errors='ignore').strip()
+                    logging.debug(f"Claude backend chunk {chunk_count}: {line_str}")
+                    
+                    if line_str.startswith('data: '):
+                        data_content = line_str[6:].strip()  # Remove 'data: ' prefix
+                        
+                        # Handle different data formats
+                        if data_content == '[DONE]':
+                            break
+                        
+                        try:
+                            # Try to parse as JSON first
+                            try:
+                                parsed_data = json.loads(data_content)
+                            except json.JSONDecodeError:
+                                # If JSON parsing fails, try to evaluate as Python dict
+                                # This handles the case where single quotes are used instead of double quotes
+                                parsed_data = ast.literal_eval(data_content)
+                            
+                            # Convert Claude backend format to standard Claude API format
+                            if 'contentBlockDelta' in parsed_data:
+                                # Extract text from the delta and format it the same way as OpenAI conversion
+                                text_content = parsed_data['contentBlockDelta']['delta'].get('text', '')
+                                if text_content:
+                                    delta_data = {
+                                        "type": "content_block_delta",
+                                        "index": 0,
+                                        "delta": {"type": "text_delta", "text": text_content}
+                                    }
+                                    delta_event = f"event: content_block_delta\ndata: {json.dumps(delta_data)}\n\n"
+                                    yield delta_event.encode('utf-8')
+                                
+                            elif 'contentBlockStop' in parsed_data:
+                                content_block_stop_data = {
+                                    "type": "content_block_stop",
+                                    "index": parsed_data['contentBlockStop'].get('contentBlockIndex', 0)
+                                }
+                                content_block_stop_event = f"event: content_block_stop\ndata: {json.dumps(content_block_stop_data)}\n\n"
+                                yield content_block_stop_event.encode('utf-8')
+                                
+                            elif 'messageStop' in parsed_data:
+                                stop_reason = parsed_data['messageStop'].get('stopReason', 'end_turn')
+                                
+                            elif 'metadata' in parsed_data:
+                                # Extract token usage information
+                                usage_info = parsed_data.get('metadata', {}).get('usage', {})
+                                message_delta_data = {
+                                    "type": "message_delta",
+                                    "delta": {"stop_reason": stop_reason or "end_turn", "stop_sequence": None},
+                                    "usage": {"output_tokens": usage_info.get('outputTokens', 0)}
+                                }
+                                message_delta_event = f"event: message_delta\ndata: {json.dumps(message_delta_data)}\n\n"
+                                yield message_delta_event.encode('utf-8')
+                                
+                                message_stop_event = f"event: message_stop\ndata: {json.dumps({'type': 'message_stop'})}\n\n"
+                                yield message_stop_event.encode('utf-8')
+                                
+                        except (json.JSONDecodeError, ValueError, SyntaxError) as e:
+                            logging.warning(f"Could not parse Claude backend data: {data_content}, error: {e}")
+                            continue
+                
+                logging.info(f"Claude backend conversion completed with {chunk_count} chunks")
+        except Exception as e:
+            logging.error(f"Error in Claude backend conversion for '{model}': {e}", exc_info=True)
+            raise
         return
 
     # For other models, we need to convert the stream to Claude's event format.
+    logging.info(f"Converting non-Claude model '{model}' stream to Claude format")
+    
     # 1. Send message_start event
     message_start_data = {
         "type": "message_start",
@@ -2145,55 +2286,110 @@ def generate_claude_streaming_response(url, headers, payload, model, subaccount_
             "usage": {"input_tokens": 0, "output_tokens": 0}
         }
     }
-    yield f"event: message_start\ndata: {json.dumps(message_start_data)}\n\n".encode('utf-8')
+    message_start_event = f"event: message_start\ndata: {json.dumps(message_start_data)}\n\n"
+    logging.debug(f"Sending message_start event: {message_start_event}")
+    yield message_start_event.encode('utf-8')
 
     # 2. Send content_block_start event
     content_block_start_data = {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}
-    yield f"event: content_block_start\ndata: {json.dumps(content_block_start_data)}\n\n".encode('utf-8')
+    content_block_start_event = f"event: content_block_start\ndata: {json.dumps(content_block_start_data)}\n\n"
+    logging.debug(f"Sending content_block_start event: {content_block_start_event}")
+    yield content_block_start_event.encode('utf-8')
 
     stop_reason = None
+    chunk_count = 0
+    delta_count = 0
 
-    with requests.post(url, headers=headers, json=payload, stream=True, timeout=600) as response:
-        response.raise_for_status()
+    try:
+        with requests.post(url, headers=headers, json=payload, stream=True, timeout=600) as response:
+            response.raise_for_status()
+            logging.debug(f"Backend response status: {response.status_code}")
+            logging.debug(f"Backend response headers: {dict(response.headers)}")
 
-        # 3. Iterate and yield content_block_delta events
-        for line in response.iter_lines():
-            if not line or not line.strip().startswith(b'data:'):
-                continue
+            # 3. Iterate and yield content_block_delta events
+            for line in response.iter_lines():
+                chunk_count += 1
+                logging.debug(f"Processing backend chunk {chunk_count}: {line}")
+                
+                if not line or not line.strip().startswith(b'data:'):
+                    logging.debug(f"Skipping non-data line {chunk_count}: {line}")
+                    continue
 
-            line_str = line.decode('utf-8', errors='ignore')[5:].strip()
-            if line_str == "[DONE]":
-                break
+                line_str = line.decode('utf-8', errors='ignore')[5:].strip()
+                logging.debug(f"Extracted line content: {line_str}")
+                
+                if line_str == "[DONE]":
+                    logging.info(f"Received [DONE] signal at chunk {chunk_count}")
+                    break
 
-            try:
-                backend_chunk = json.loads(line_str)
+                try:
+                    backend_chunk = json.loads(line_str)
+                    logging.debug(f"Parsed backend chunk: {json.dumps(backend_chunk, indent=2)}")
 
-                claude_delta = None
-                if is_gemini_model(model):
-                    claude_delta = convert_gemini_chunk_to_claude_delta(backend_chunk)
-                    if not stop_reason: stop_reason = get_claude_stop_reason_from_gemini_chunk(backend_chunk)
-                else:  # Assume OpenAI-compatible
-                    claude_delta = convert_openai_chunk_to_claude_delta(backend_chunk)
-                    if not stop_reason: stop_reason = get_claude_stop_reason_from_openai_chunk(backend_chunk)
+                    claude_delta = None
+                    if is_gemini_model(model):
+                        logging.debug(f"Converting Gemini chunk to Claude delta")
+                        claude_delta = convert_gemini_chunk_to_claude_delta(backend_chunk)
+                        if not stop_reason: 
+                            stop_reason = get_claude_stop_reason_from_gemini_chunk(backend_chunk)
+                            if stop_reason:
+                                logging.debug(f"Extracted stop reason from Gemini: {stop_reason}")
+                    else:  # Assume OpenAI-compatible
+                        logging.debug(f"Converting OpenAI chunk to Claude delta")
+                        claude_delta = convert_openai_chunk_to_claude_delta(backend_chunk)
+                        if not stop_reason: 
+                            stop_reason = get_claude_stop_reason_from_openai_chunk(backend_chunk)
+                            if stop_reason:
+                                logging.debug(f"Extracted stop reason from OpenAI: {stop_reason}")
 
-                if claude_delta:
-                    yield f"event: content_block_delta\ndata: {json.dumps(claude_delta)}\n\n".encode('utf-8')
+                    if claude_delta:
+                        delta_count += 1
+                        delta_event = f"event: content_block_delta\ndata: {json.dumps(claude_delta)}\n\n"
+                        logging.debug(f"Sending content_block_delta {delta_count}: {delta_event}")
+                        yield delta_event.encode('utf-8')
+                    else:
+                        logging.debug(f"No delta extracted from chunk {chunk_count}")
 
-            except json.JSONDecodeError:
-                logging.warning(f"Could not decode JSON from stream chunk: {line_str}")
-                continue
+                except json.JSONDecodeError as e:
+                    logging.warning(f"Could not decode JSON from stream chunk {chunk_count}: {line_str}, error: {e}")
+                    continue
+                except Exception as e:
+                    logging.error(f"Error processing chunk {chunk_count}: {e}", exc_info=True)
+                    continue
+
+            logging.info(f"Processed {chunk_count} chunks, generated {delta_count} deltas")
+
+    except requests.exceptions.HTTPError as e:
+        logging.error(f"HTTP error in Claude streaming conversion for '{model}': {e}", exc_info=True)
+        if hasattr(e, 'response') and e.response:
+            logging.error(f"Error response status: {e.response.status_code}")
+            logging.error(f"Error response body: {e.response.text}")
+        raise
+    except Exception as e:
+        logging.error(f"Unexpected error in Claude streaming conversion for '{model}': {e}", exc_info=True)
+        raise
 
     # 4. Send stop events
-    yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': 0})}\n\n".encode('utf-8')
+    logging.debug(f"Sending stop events with stop_reason: {stop_reason}")
+    
+    content_block_stop_event = f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': 0})}\n\n"
+    logging.debug(f"Sending content_block_stop event: {content_block_stop_event}")
+    yield content_block_stop_event.encode('utf-8')
 
     message_delta_data = {
         "type": "message_delta",
         "delta": {"stop_reason": stop_reason or "end_turn", "stop_sequence": None},
         "usage": {"output_tokens": 0}  # Token usage is not available in most streams
     }
-    yield f"event: message_delta\ndata: {json.dumps(message_delta_data)}\n\n".encode('utf-8')
+    message_delta_event = f"event: message_delta\ndata: {json.dumps(message_delta_data)}\n\n"
+    logging.debug(f"Sending message_delta event: {message_delta_event}")
+    yield message_delta_event.encode('utf-8')
 
-    yield f"event: message_stop\ndata: {json.dumps({'type': 'message_stop'})}\n\n".encode('utf-8')
+    message_stop_event = f"event: message_stop\ndata: {json.dumps({'type': 'message_stop'})}\n\n"
+    logging.debug(f"Sending message_stop event: {message_stop_event}")
+    yield message_stop_event.encode('utf-8')
+    
+    logging.info(f"Claude streaming response completed for model '{model}' with {delta_count} content deltas")
 
 
 if __name__ == '__main__':
