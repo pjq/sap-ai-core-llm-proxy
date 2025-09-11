@@ -236,9 +236,26 @@ Cleans up HTTP client resources. Should be called when done using the client.
 # Run tests only
 ./gradlew test
 
+# Build fat JAR (executable with all dependencies)
+./gradlew shadowJar
+
+# Build library JAR (for use as dependency, without Main class)
+./gradlew shadowLibJar
+
+# Build both JARs
+./gradlew shadowJar shadowLibJar
+
 # Generate distributions
 ./gradlew distZip distTar
 ```
+
+#### Generated JAR Files
+
+After running `./gradlew shadowJar shadowLibJar`, you'll find these files in `build/libs/`:
+
+- **`sap-ai-core-client.jar`** - Executable fat JAR (~3.4MB) with all dependencies and Main class
+- **`sap-ai-core-client-lib.jar`** - Library JAR (~3.4MB) with all dependencies, no Main class (for use as dependency)
+- **`SAPAICoreJavaClient-1.0-SNAPSHOT.jar`** - Thin JAR (~14KB) with only your code (requires classpath)
 
 ### Running the Example
 
@@ -283,17 +300,87 @@ Response: The capital of Japan is Tokyo.
 BUILD SUCCESSFUL
 ```
 
+## Using the JAR Libraries
+
+### Executable JAR (sap-ai-core-client.jar)
+
+The executable JAR includes all dependencies and can be run directly:
+
+```bash
+# Run the example application
+java -jar build/libs/sap-ai-core-client.jar
+
+# Run with specific JVM options
+java -Xmx1g -Dfile.encoding=UTF-8 -jar build/libs/sap-ai-core-client.jar
+
+# Copy and run from anywhere (ensure config.json is accessible)
+cp build/libs/sap-ai-core-client.jar /path/to/your/project/
+cd /path/to/your/project/
+java -jar sap-ai-core-client.jar
+```
+
+### Library JAR (sap-ai-core-client-lib.jar)
+
+Use this JAR as a dependency in your own Java projects:
+
+```bash
+# Compile your project with the library
+javac -cp "build/libs/sap-ai-core-client-lib.jar" YourApp.java
+
+# Run your project with the library
+java -cp "build/libs/sap-ai-core-client-lib.jar:." YourApp
+```
+
+#### Maven Usage
+
+To use in a Maven project, install to local repository:
+
+```bash
+mvn install:install-file \
+  -Dfile=build/libs/sap-ai-core-client-lib.jar \
+  -DgroupId=me.pjq \
+  -DartifactId=sap-ai-core-client \
+  -Dversion=1.0-SNAPSHOT \
+  -Dpackaging=jar
+```
+
+Then add to your `pom.xml`:
+
+```xml
+<dependency>
+    <groupId>me.pjq</groupId>
+    <artifactId>sap-ai-core-client</artifactId>
+    <version>1.0-SNAPSHOT</version>
+</dependency>
+```
+
+#### Gradle Usage
+
+Copy the JAR to your project and add to `build.gradle`:
+
+```gradle
+dependencies {
+    implementation files('libs/sap-ai-core-client-lib.jar')
+}
+```
+
 ### Alternative Run Methods
 
 ```bash
-# Run with custom config file path
-java -cp build/libs/*:build/dependencies/* me.pjq.Main
+# Run the executable fat JAR directly
+java -jar build/libs/sap-ai-core-client.jar
+
+# Run with custom config file path (modify Main.java to accept arguments)
+java -jar build/libs/sap-ai-core-client.jar /path/to/config.json
 
 # Run from distribution
 ./build/distributions/SAPAICoreJavaClient-1.0-SNAPSHOT/bin/SAPAICoreJavaClient
 
 # Run with custom JVM options
-./gradlew run -Dfile.encoding=UTF-8 -Xmx512m
+java -Xmx512m -Dfile.encoding=UTF-8 -jar build/libs/sap-ai-core-client.jar
+
+# Use the library JAR in another Java project (add to classpath)
+java -cp "build/libs/sap-ai-core-client-lib.jar:your-app.jar" com.yourcompany.YourMainClass
 ```
 
 ### Development Commands
