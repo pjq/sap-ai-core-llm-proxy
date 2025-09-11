@@ -1,6 +1,7 @@
 plugins {
     id("java")
     id("application")
+    id("com.github.johnrengelman.shadow") version "8.1.1"
 }
 
 group = "me.pjq"
@@ -23,4 +24,36 @@ tasks.test {
 
 application {
     mainClass.set("me.pjq.Main")
+}
+
+// Configure Shadow JAR (Fat JAR)
+tasks.shadowJar {
+    archiveBaseName.set("sap-ai-core-client")
+    archiveClassifier.set("")
+    archiveVersion.set("")
+    
+    // Include all dependencies
+    mergeServiceFiles()
+    
+    // Set main class for executable JAR
+    manifest {
+        attributes["Main-Class"] = "me.pjq.Main"
+    }
+}
+
+// Also create a library JAR without Main-Class (for use as dependency)
+tasks.register<com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar>("shadowLibJar") {
+    archiveBaseName.set("sap-ai-core-client-lib")
+    archiveClassifier.set("")
+    archiveVersion.set("")
+    
+    from(sourceSets.main.get().output)
+    configurations = listOf(project.configurations.runtimeClasspath.get())
+    
+    // Exclude the Main class for library usage
+    exclude("me/pjq/Main.class")
+    
+    mergeServiceFiles()
+    
+    // No Main-Class attribute for library JAR
 }
