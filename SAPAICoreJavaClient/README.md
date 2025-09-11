@@ -222,6 +222,25 @@ Cleans up HTTP client resources. Should be called when done using the client.
 - **Automatic Routing**: Client automatically determines which subaccount to use for each model
 - **Token Management**: Independent token caching per subaccount
 
+## Quick Start
+
+### Using Pre-built JARs
+
+Pre-built JAR files are available in the `jarOutput/` directory for immediate use:
+
+```bash
+# Quick test with demo mode (tests all configured models)
+java -jar jarOutput/sap-ai-core-client.jar
+
+# Test specific model
+java -jar jarOutput/sap-ai-core-client.jar --model gpt-4o --message "Hello, World!"
+
+# List available models from your config
+java -jar jarOutput/sap-ai-core-client.jar --list-models
+```
+
+**Note**: Make sure your `config.json` file is in the same directory (`./config.json`) or specify the path with `--config`.
+
 ## Building and Running
 
 ### Build Commands
@@ -269,26 +288,44 @@ java -jar build/libs/sap-ai-core-client.jar
 
 ### Command Line Interface
 
-The JAR supports various command-line options for easy testing:
+The JAR supports various command-line options for easy testing. You can use either the locally built JAR or the pre-built JAR from the `jarOutput/` directory:
+
+```bash
+# Using the locally built JAR
+java -jar build/libs/sap-ai-core-client.jar [options]
+
+# Using the pre-built JAR (available in jarOutput/ directory)
+java -jar jarOutput/sap-ai-core-client.jar [options]
+```
+
+#### Available Commands
 
 ```bash
 # Show help
-java -jar build/libs/sap-ai-core-client.jar --help
+java -jar jarOutput/sap-ai-core-client.jar --help
 
 # Test specific model with custom message
-java -jar build/libs/sap-ai-core-client.jar --model gpt-4o --message "What is AI?"
+java -jar jarOutput/sap-ai-core-client.jar --model gpt-4o --message "What is AI?"
 
 # Use custom config file
-java -jar build/libs/sap-ai-core-client.jar --config ./my-config.json --model anthropic/claude-4-sonnet --message "Hello!"
+java -jar jarOutput/sap-ai-core-client.jar --config ./config.json --model anthropic/claude-4-sonnet --message "Hello!"
 
 # Set custom temperature (0.0-1.0)
-java -jar build/libs/sap-ai-core-client.jar -m gemini-2.5-pro -msg "Explain quantum computing" -t 0.3
+java -jar jarOutput/sap-ai-core-client.jar -m gemini-2.5-pro -msg "Explain quantum computing" -t 0.3
 
 # List available models (from config)
-java -jar build/libs/sap-ai-core-client.jar --list-models
+java -jar jarOutput/sap-ai-core-client.jar --list-models
 
 # Debug mode for troubleshooting
-java -jar build/libs/sap-ai-core-client.jar --model gpt-4o --message "Test" --debug
+java -jar jarOutput/sap-ai-core-client.jar --model gpt-4o --message "Test" --debug
+
+# Run in demo mode (tests all available models)
+java -jar jarOutput/sap-ai-core-client.jar
+
+# Quick tests with different models
+java -jar jarOutput/sap-ai-core-client.jar -m gpt-4o -msg "Hello from GPT!"
+java -jar jarOutput/sap-ai-core-client.jar -m anthropic/claude-4-sonnet -msg "Hello from Claude!"
+java -jar jarOutput/sap-ai-core-client.jar -m gemini-2.5-pro -msg "Hello from Gemini!"
 ```
 
 #### Command Line Options
@@ -296,7 +333,7 @@ java -jar build/libs/sap-ai-core-client.jar --model gpt-4o --message "Test" --de
 | Option | Short | Description | Default |
 |--------|-------|-------------|---------|
 | `--help` | `-h` | Show help message | - |
-| `--config <file>` | `-c` | Config file path | `../config.json` |
+| `--config <file>` | `-c` | Config file path | `./config.json` |
 | `--model <name>` | `-m` | Model name | - |
 | `--message <text>` | `-msg` | Message to send | - |
 | `--temperature <num>` | `-t` | Temperature (0.0-1.0) | `0.7` |
@@ -309,7 +346,7 @@ java -jar build/libs/sap-ai-core-client.jar --model gpt-4o --message "Test" --de
 ```
 SAP AI Core Java Client - Demo Mode
 ===================================
-Config: ../config.json
+Config: ./config.json
 
 --- Testing GPT-4o ---
 Request: Hello, how are you today?
@@ -330,7 +367,7 @@ $ java -jar sap-ai-core-client.jar --model gpt-4o --message "What is the capital
 
 SAP AI Core Java Client - Single Test Mode
 ==========================================
-Config: ../config.json
+Config: ./config.json
 Model: gpt-4o
 Message: What is the capital of France?
 Temperature: 0.3
