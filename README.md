@@ -188,7 +188,6 @@ python proxy_server.py
 The server will run on `http://127.0.0.1:3001`.
 
 ### Anthropic Claude Messages API Compatibility
-
 The proxy server provides full compatibility with the Anthropic Claude Messages API through the `/v1/messages` endpoint. This allows you to use any application that supports the Claude Messages API directly with SAP AI Core.
 - **Endpoint**: `http://127.0.0.1:3001/v1/messages`
 
@@ -199,6 +198,33 @@ The proxy server provides full compatibility with the Anthropic Claude Messages 
 - **Tool use**: Support for function calling and tool usage
 - **System messages**: Support for system prompts
 - **Multi-turn conversations**: Full conversation history support
+
+### Anthropic Claude Integration with SAP AI Core
+The project is use the official SAP AI SDK (`sap-ai-sdk-gen`) for Anthropic Claude integration. This method provides better compatibility and follows SAP's official guidelines.
+- https://help.sap.com/doc/generative-ai-hub-sdk/CLOUD/en-US/_reference/README_sphynx.html
+#### Configuration
+1. Create the configuration directory and file:
+```shell
+mkdir -p ~/.aicore
+```
+
+2. Create `~/.aicore/config.json` with your SAP AI Core credentials:
+```json
+{
+  "AICORE_AUTH_URL": "https://*****.authentication.sap.hana.ondemand.com",
+  "AICORE_CLIENT_ID": "*****",
+  "AICORE_CLIENT_SECRET": "*****",
+  "AICORE_RESOURCE_GROUP": "*****",
+  "AICORE_BASE_URL": "https://api.ai.*****.cfapps.sap.hana.ondemand.com/v2"
+}
+```
+
+Replace the `*****` placeholders with your actual SAP AI Core service credentials:
+- `AICORE_AUTH_URL`: Your SAP AI Core authentication URL
+- `AICORE_CLIENT_ID`: Your client ID from the service key
+- `AICORE_CLIENT_SECRET`: Your client secret from the service key
+- `AICORE_RESOURCE_GROUP`: Your resource group (typically "default")
+- `AICORE_BASE_URL`: Your SAP AI Core API base URL
 
 ### Compatible Applications
 Any application that supports the Anthropic Claude Messages API can now work with SAP AI Core through this proxy, including:
@@ -212,16 +238,13 @@ You need to set the enviroment variables before run the claude code.
 ```shell
 export ANTHROPIC_AUTH_TOKEN=your_secret_key
 export ANTHROPIC_BASE_URL=http://127.0.0.1:3001
-export ANTHROPIC_MODEL=4-sonnet
+export ANTHROPIC_MODEL=anthropic--claude-4-sonnet
 ```
 
 Then run the claude code
 ```shell
 claude
 ```
-
-Issues:
-- The function tool call still doesn't work for Claude Code.
 
 ## Running the Proxy Server over HTTPS
 To run the proxy server over HTTPS, you need to generate SSL certificates. You can use the following command to generate a self-signed certificate and key:
@@ -279,8 +302,9 @@ Choose the API Provider -> OpenAI API Compatible
 
 Note: Cline is already official support SAP AI Core.
 
-## Claude Code Integration with SAPI AI Core
-You can use the tool, so you can integrate with the SAP AI Core like how it works with OpenRouter.
+### Alternative: Claude Code Integration via Proxy
+
+You can also use the proxy server approach with Claude Code Router:
 - https://github.com/musistudio/claude-code-router
 
 ```shell
