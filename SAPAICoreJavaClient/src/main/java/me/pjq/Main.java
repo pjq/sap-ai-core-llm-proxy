@@ -5,7 +5,7 @@ import java.util.Arrays;
 import java.util.List;
 
 public class Main {
-    private static final String DEFAULT_CONFIG = "../config.json";
+    private static final String DEFAULT_CONFIG = "./config.json";
     private static final String DEFAULT_MESSAGE = "Hello, how are you today?";
     
     public static void main(String[] args) {
@@ -190,7 +190,7 @@ public class Main {
         System.out.println();
         System.out.println("Options:");
         System.out.println("  -h, --help              Show this help message");
-        System.out.println("  -c, --config <file>     Config file path (default: ../config.json)");
+        System.out.println("  -c, --config <file>     Config file path (default: ./config.json)");
         System.out.println("  -m, --model <name>      Model name (e.g., gpt-4o, anthropic/claude-4-sonnet)");
         System.out.println("  -msg, --message <text>  Message to send to the model");
         System.out.println("  -t, --temperature <num> Temperature (0.0-1.0, default: 0.7)");
