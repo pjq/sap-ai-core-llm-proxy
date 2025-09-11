@@ -260,44 +260,83 @@ After running `./gradlew shadowJar shadowLibJar`, you'll find these files in `bu
 ### Running the Example
 
 ```bash
-# Run the example application (requires config.json in parent directory)
+# Run the example application (demo mode - tests multiple models)
 ./gradlew run
+
+# Or run the JAR directly
+java -jar build/libs/sap-ai-core-client.jar
 ```
+
+### Command Line Interface
+
+The JAR supports various command-line options for easy testing:
+
+```bash
+# Show help
+java -jar build/libs/sap-ai-core-client.jar --help
+
+# Test specific model with custom message
+java -jar build/libs/sap-ai-core-client.jar --model gpt-4o --message "What is AI?"
+
+# Use custom config file
+java -jar build/libs/sap-ai-core-client.jar --config ./my-config.json --model anthropic/claude-4-sonnet --message "Hello!"
+
+# Set custom temperature (0.0-1.0)
+java -jar build/libs/sap-ai-core-client.jar -m gemini-2.5-pro -msg "Explain quantum computing" -t 0.3
+
+# List available models (from config)
+java -jar build/libs/sap-ai-core-client.jar --list-models
+
+# Debug mode for troubleshooting
+java -jar build/libs/sap-ai-core-client.jar --model gpt-4o --message "Test" --debug
+```
+
+#### Command Line Options
+
+| Option | Short | Description | Default |
+|--------|-------|-------------|---------|
+| `--help` | `-h` | Show help message | - |
+| `--config <file>` | `-c` | Config file path | `../config.json` |
+| `--model <name>` | `-m` | Model name | - |
+| `--message <text>` | `-msg` | Message to send | - |
+| `--temperature <num>` | `-t` | Temperature (0.0-1.0) | `0.7` |
+| `--list-models` | `-l` | List available models | - |
+| `--debug` | - | Show debug information | - |
 
 #### Expected Output
-When you run `./gradlew run`, you should see output similar to:
 
+**Demo Mode (default):**
 ```
-Testing SAP AI Core Java Client
-================================
+SAP AI Core Java Client - Demo Mode
+===================================
+Config: ../config.json
 
-=== Testing with config.json (Configuration-Driven Mode) ===
-
---- Testing GPT-4o via config.json ---
+--- Testing GPT-4o ---
 Request: Hello, how are you today?
-Response: Hello! I'm here and ready to help. How can I assist you today?
+Response: Hello! I'm here and ready to assist you. How can I help you today?
 
---- Testing Claude 4-Sonnet via config.json ---
+--- Testing Claude 4-Sonnet ---
 Request: Hello, how are you today?
 Response: Hello! I'm doing well, thank you for asking. I'm here and ready to help with whatever you'd like to discuss or work on. How are you doing today?
 
---- Testing Gemini 2.5 Pro via config.json ---
+--- Testing Gemini 2.5 Pro ---
 Request: Hello, how are you today?
-Response: Hello! I'm doing very well, thank you for asking. I'm ready to help with any questions or tasks you have.
+Response: Hello! I'm doing great, thank you for asking. As an AI, I'm always ready to help.
+```
 
---- Testing convenience method postMessageOpenAI() ---
-Request: Hello, how are you today?
-Response: Hello! I'm just a computer program, so I don't have feelings, but I'm here to help you with anything you need. How can I assist you today?
+**Single Test Mode:**
+```bash
+$ java -jar sap-ai-core-client.jar --model gpt-4o --message "What is the capital of France?" --temperature 0.3
 
---- Testing convenience method postMessageClaude() ---
-Request: What is the capital of France?
-Response: The capital of France is Paris.
+SAP AI Core Java Client - Single Test Mode
+==========================================
+Config: ../config.json
+Model: gpt-4o
+Message: What is the capital of France?
+Temperature: 0.3
 
---- Testing convenience method postMessageGemini() ---
-Request: What is the capital of Japan?
-Response: The capital of Japan is Tokyo.
-
-BUILD SUCCESSFUL
+Response:
+The capital of France is Paris.
 ```
 
 ## Using the JAR Libraries
