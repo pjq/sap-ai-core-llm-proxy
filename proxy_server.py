@@ -14,6 +14,10 @@ import ast
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any
 
+# SAP AI SDK imports
+from gen_ai_hub.proxy.core.utils import kwargs_if_set
+from gen_ai_hub.proxy.native.amazon.clients import Session
+
 
 
 @dataclass
@@ -468,6 +472,9 @@ def convert_claude_request_to_openai(payload):
         openai_payload["temperature"] = payload["temperature"]
     if "stream" in payload:
         openai_payload["stream"] = payload["stream"]
+        # Add reasoning.enabled if stream is true
+        if payload["stream"] and "reasoning" not in openai_payload:
+            openai_payload["reasoning"] = {"enabled": True}
     if "tools" in payload and payload["tools"]:
         # Convert Claude tools format to OpenAI tools format
         openai_tools = []
@@ -1509,7 +1516,7 @@ def load_balance_url(model_name: str) -> tuple:
         if is_claude_model(model_name):
             logging.warning(f"Claude model '{model_name}' not found, trying fallback models")
             # Try common Claude model fallbacks
-            fallback_models = ["4-sonnet"]
+            fallback_models = ["anthropic--claude-4-sonnet"]
             for fallback in fallback_models:
                 if fallback in proxy_config.model_to_subaccounts and proxy_config.model_to_subaccounts[fallback]:
                     logging.info(f"Using fallback Claude model '{fallback}' for '{model_name}'")
@@ -1701,6 +1708,16 @@ def handle_default_request(payload, model="gpt-4o"):
     else:
         api_version = "2023-05-15"
         modified_payload = payload
+
+    # If streaming requested and reasoning not present, inject reasoning.enabled
+    try:
+        if modified_payload.get("stream") and "reasoning" not in modified_payload:
+            # Shallow copy to avoid mutating original reference unexpectedly
+            modified_payload = modified_payload.copy()
+            modified_payload["reasoning"] = {"enabled": True}
+            logging.debug("Injected reasoning.enabled=true into outgoing OpenAI payload (default handler)")
+    except Exception as e:
+        logging.warning(f"Could not inject reasoning flag: {e}")
     
     endpoint_url = f"{selected_url.rstrip('/')}/chat/completions?api-version={api_version}"
     
@@ -1800,6 +1817,14 @@ def proxy_openai_stream():
     
     # Check streaming mode
     is_stream = payload.get("stream", False)
+    # Inject reasoning flag early so downstream handlers see it
+    if is_stream and "reasoning" not in payload:
+        try:
+            payload = payload.copy()
+            payload["reasoning"] = {"enabled": True}
+            logging.debug("proxy_openai_stream: Injected reasoning.enabled=true into incoming payload")
+        except Exception as e:
+            logging.warning(f"proxy_openai_stream: Failed to inject reasoning flag: {e}")
     logging.info(f"Model: {model}, Streaming: {is_stream}")
     
     try:
@@ -1853,11 +1878,183 @@ def proxy_openai_stream():
 
 @app.route('/v1/messages', methods=['POST'])
 def proxy_claude_request():
-    """Handles requests that are compatible with the Anthropic Claude Messages API."""
+    """Handles requests that are compatible with the Anthropic Claude Messages API using SAP AI SDK."""
     logging.info("Received request to /v1/messages")
     logging.debug(f"Request headers: {request.headers}")
     logging.debug(f"Request body:\n{json.dumps(request.get_json(), indent=4)}")
 
+    # Validate API key using proxy config authentication
+    api_key = request.headers.get("X-Api-Key", "")
+    if not api_key:
+        api_key = request.headers.get("Authorization", "").replace("Bearer ", "")
+    
+    if not verify_request_token(request):
+        return jsonify({
+            "type": "error",
+            "error": { "type": "authentication_error", "message": "Invalid API Key provided." }
+        }), 401
+
+    # Get request body and extract model
+    request_json = request.get_json(cache=False)
+    request_model = request_json.get("model")
+    # Hardcode to claude-3-5-haiku-20241022 if no model specified
+    request_model = "anthropic--claude-4-sonnet"
+    logging.info(f"hardcode request_model to: {request_model}")
+    
+    if not request_model:
+        return jsonify({
+            "type": "error", 
+            "error": {"type": "invalid_request_error", "message": "Missing 'model' parameter"}
+        }), 400
+
+    # Validate model availability
+    try:
+        selected_url, subaccount_name, resource_group, model = load_balance_url(request_model)
+    except ValueError as e:
+        logging.error(f"Model validation failed: {e}")
+        model = request_model
+        # return jsonify({
+        #     "type": "error",
+        #     "error": {"type": "invalid_request_error", "message": f"Model '{request_model}' not available"}
+        # }), 400
+
+    # Check if this is an Anthropic model that should use the SDK
+    if not is_claude_model(model):
+        logging.warning(f"Model '{model}' is not a Claude model, falling back to original implementation")
+        # Fall back to original implementation for non-Claude models
+        return proxy_claude_request_original()
+
+    logging.info(f"Request from Claude API for model: {model}")
+    
+    # Extract streaming flag
+    stream = request_json.get("stream", False)
+    
+    try:
+        # Use SAP AI SDK Session to create Bedrock client for the model
+        logging.info(f"Attempting to create SAP AI SDK client for model: {model}")
+        bedrock = Session().client(model_name=model)
+        logging.info("SAP AI SDK client created successfully")
+        
+        # Get the conversation messages
+        conversation = request_json.get("messages", [])
+        logging.debug(f"Original conversation: {conversation}")
+        
+        # Process conversation to handle empty text content and image compression
+        for message in conversation:
+            content = message.get("content")
+            if isinstance(content, list):
+                items_to_remove = []
+                for i, item in enumerate(content):
+                    if item.get("type") == "text" and (not item.get("text") or item.get("text") == ""):
+                        # Mark empty text items for removal
+                        items_to_remove.append(i)
+                    elif (item.get("type") == "image" and 
+                          item.get("source", {}).get("type") == "base64"):
+                        # Compress image data if available (would need ImageCompressor utility)
+                        image_data = item.get("source", {}).get("data")
+                        if image_data:
+                            # Note: ImageCompressor would need to be imported/implemented
+                            # For now, keeping original data
+                            logging.debug("Image data found in message content")
+                
+                # Remove empty text items (in reverse order to maintain indices)
+                for i in reversed(items_to_remove):
+                    content.pop(i)
+
+        # Prepare the request body for Bedrock
+        body = request_json.copy()
+        
+        # Remove model and stream from body as they're handled separately
+        body.pop("model", None)
+        body.pop("stream", None)
+        
+        # Add required anthropic_version for Bedrock
+        body["anthropic_version"] = "bedrock-2023-05-31"
+        
+        # Convert body to JSON string for Bedrock API
+        body_json = json.dumps(body)
+        
+        logging.debug(f"Request body for Bedrock: {body_json}")
+
+        if stream:
+            # Handle streaming response
+            def stream_generate():
+                try:
+                    response = bedrock.invoke_model_with_response_stream(body=body_json)
+                    response_body = response.get("body")
+                    
+                    if response_body is not None:
+                        for event in response_body:
+                            chunk = json.loads(event["chunk"]["bytes"])
+                            logging.debug(f"Streaming chunk: {chunk}")
+                            
+                            chunk_type = chunk.get("type")
+                            
+                            # Handle different chunk types according to Claude streaming format
+                            if chunk_type == "message_start":
+                                yield f"event: message_start\ndata: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+                            elif chunk_type == "content_block_start":
+                                yield f"event: content_block_start\ndata: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+                            elif chunk_type == "content_block_delta":
+                                yield f"event: content_block_delta\ndata: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+                            elif chunk_type == "content_block_stop":
+                                yield f"event: content_block_stop\ndata: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+                            elif chunk_type == "message_delta":
+                                yield f"event: message_delta\ndata: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+                            elif chunk_type == "message_stop":
+                                yield f"event: message_stop\ndata: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+                                yield "data: [DONE]\n\n"
+                                break
+                                
+                except Exception as e:
+                    logging.error(f"Error in streaming response: {e}", exc_info=True)
+                    error_chunk = {
+                        "type": "error",
+                        "error": {"type": "api_error", "message": str(e)}
+                    }
+                    yield f"data: {json.dumps(error_chunk, ensure_ascii=False)}\n\n"
+
+            return Response(stream_generate(), mimetype="text/event-stream"), 200
+            
+        else:
+            # Handle non-streaming response
+            response = bedrock.invoke_model(body=body_json)
+            response_body = response.get("body")
+            
+            if response_body is not None:
+                # Read the response body
+                chunk_data = ''
+                for event in response_body:
+                    if isinstance(event, bytes):
+                        chunk_data += event.decode("utf-8")
+                    else:
+                        chunk_data += str(event)
+                
+                if chunk_data:
+                    final_response = json.loads(chunk_data)
+                    logging.debug(f"Non-streaming response: {final_response}")
+                    return jsonify(final_response), 200
+                else:
+                    return jsonify({}), 200
+            else:
+                return jsonify({}), 200
+
+    except Exception as e:
+        logging.error(f"Error handling Anthropic proxy request using SDK: {e}", exc_info=True)
+        error_dict = {
+            "type": "error",
+            "error": {
+                "type": "api_error", 
+                "message": str(e)
+            }
+        }
+        return jsonify(error_dict), 500
+
+
+def proxy_claude_request_original():
+    """Original implementation preserved as fallback."""
+    logging.info("Using original Claude request implementation")
+    
     if not verify_request_token(request):
         return jsonify({
             "type": "error",
@@ -1975,6 +2172,14 @@ def handle_non_streaming_request(url, headers, payload, model, subaccount_name):
     try:
         # Log the raw request body and payload being forwarded
         logging.info(f"Raw request received (non-streaming): {json.dumps(request.json, indent=2)}")
+        # Ensure reasoning flag for streaming-capable payloads even if request ended up non-stream
+        if payload.get("stream") and "reasoning" not in payload:
+            try:
+                payload = payload.copy()
+                payload["reasoning"] = {"enabled": True}
+                logging.debug("handle_non_streaming_request: Injected reasoning.enabled=true into payload")
+            except Exception as e:
+                logging.warning(f"handle_non_streaming_request: Could not inject reasoning flag: {e}")
         logging.info(f"Forwarding payload to API (non-streaming): {json.dumps(payload, indent=2)}")
         
         # Make request to backend API
@@ -2039,6 +2244,13 @@ def generate_streaming_response(url, headers, payload, model, subaccount_name):
     """
     # Log the raw request body and payload being forwarded
     logging.info(f"Raw request received (streaming): {json.dumps(request.json, indent=2)}")
+    if payload.get("stream") and "reasoning" not in payload:
+        try:
+            payload = payload.copy()
+            payload["reasoning"] = {"enabled": True}
+            logging.debug("generate_streaming_response: Injected reasoning.enabled=true into payload")
+        except Exception as e:
+            logging.warning(f"generate_streaming_response: Could not inject reasoning flag: {e}")
     logging.info(f"Forwarding payload to API (streaming): {json.dumps(payload, indent=2)}")
     
     buffer = ""
