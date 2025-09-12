@@ -2799,4 +2799,9 @@ if __name__ == '__main__':
 
     logging.info(f"Starting proxy server on host {host} and port {port}...")
     logging.info(f"API Host: http://{host}:{port}/v1")
+    logging.info(f"Available endpoints:")
+    logging.info(f"  - OpenAI Compatible API: http://{host}:{port}/v1/chat/completions")
+    logging.info(f"  - Anthropic Claude API: http://{host}:{port}/v1/messages")
+    logging.info(f"  - Models Listing: http://{host}:{port}/v1/models")
+    logging.info(f"  - Embeddings API: http://{host}:{port}/v1/embeddings")
     app.run(host=host, port=port, debug=args.debug)

@@ -7,7 +7,7 @@ So it is compatible with any application that supports the OpenAI API, so you ca
 - Cherry Studio
 - Cline
 - Lobe Chat
-- Claude Code (https://github.com/pjq/sap-ai-core-llm-proxy?tab=readme-ov-file#claude-code)
+- Claude Code [(Claude Code Guideline)](./docs/ClaudeCodeGuideline.md)
 - ChatWise
 - Or [Chitchat](https://github.com/pjq/ChitChat/)
 - Or [ChatCat](https://github.com/pjq/ChatCat/) 
@@ -33,6 +33,11 @@ After you run the proxy server, you will get
 - API BaseUrl: http://127.0.0.1:3001/v1
 - API key will be one of secret_authentication_tokens. 
 - Model ID: models you configured in the `deployment_models`
+
+So two major end point
+- OpenAI Compatible API: http://127.0.0.1:3001/v1/chat/completion
+- Anthrophic Claude Sonnet API: http://127.0.0.1:3001/v1/messages
+
 
 You can check the models list
 - http://127.0.0.1:3001/v1/models
