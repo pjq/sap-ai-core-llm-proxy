@@ -7,7 +7,7 @@ So it is compatible with any application that supports the OpenAI API, so you ca
 - Cherry Studio
 - Cline
 - Lobe Chat
-- Claude Code (via the Claude Code Router)
+- Claude Code (https://github.com/pjq/sap-ai-core-llm-proxy?tab=readme-ov-file#claude-code)
 - ChatWise
 - Or [Chitchat](https://github.com/pjq/ChitChat/)
 - Or [ChatCat](https://github.com/pjq/ChatCat/) 
