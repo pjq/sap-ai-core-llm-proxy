@@ -472,9 +472,6 @@ def convert_claude_request_to_openai(payload):
         openai_payload["temperature"] = payload["temperature"]
     if "stream" in payload:
         openai_payload["stream"] = payload["stream"]
-        # Add reasoning.enabled if stream is true
-        if payload["stream"] and "reasoning" not in openai_payload:
-            openai_payload["reasoning"] = {"enabled": True}
     if "tools" in payload and payload["tools"]:
         # Convert Claude tools format to OpenAI tools format
         openai_tools = []
@@ -1708,16 +1705,6 @@ def handle_default_request(payload, model="gpt-4o"):
     else:
         api_version = "2023-05-15"
         modified_payload = payload
-
-    # If streaming requested and reasoning not present, inject reasoning.enabled
-    try:
-        if modified_payload.get("stream") and "reasoning" not in modified_payload:
-            # Shallow copy to avoid mutating original reference unexpectedly
-            modified_payload = modified_payload.copy()
-            modified_payload["reasoning"] = {"enabled": True}
-            logging.debug("Injected reasoning.enabled=true into outgoing OpenAI payload (default handler)")
-    except Exception as e:
-        logging.warning(f"Could not inject reasoning flag: {e}")
     
     endpoint_url = f"{selected_url.rstrip('/')}/chat/completions?api-version={api_version}"
     
@@ -1817,14 +1804,6 @@ def proxy_openai_stream():
     
     # Check streaming mode
     is_stream = payload.get("stream", False)
-    # Inject reasoning flag early so downstream handlers see it
-    if is_stream and "reasoning" not in payload:
-        try:
-            payload = payload.copy()
-            payload["reasoning"] = {"enabled": True}
-            logging.debug("proxy_openai_stream: Injected reasoning.enabled=true into incoming payload")
-        except Exception as e:
-            logging.warning(f"proxy_openai_stream: Failed to inject reasoning flag: {e}")
     logging.info(f"Model: {model}, Streaming: {is_stream}")
     
     try:
@@ -2172,14 +2151,6 @@ def handle_non_streaming_request(url, headers, payload, model, subaccount_name):
     try:
         # Log the raw request body and payload being forwarded
         logging.info(f"Raw request received (non-streaming): {json.dumps(request.json, indent=2)}")
-        # Ensure reasoning flag for streaming-capable payloads even if request ended up non-stream
-        if payload.get("stream") and "reasoning" not in payload:
-            try:
-                payload = payload.copy()
-                payload["reasoning"] = {"enabled": True}
-                logging.debug("handle_non_streaming_request: Injected reasoning.enabled=true into payload")
-            except Exception as e:
-                logging.warning(f"handle_non_streaming_request: Could not inject reasoning flag: {e}")
         logging.info(f"Forwarding payload to API (non-streaming): {json.dumps(payload, indent=2)}")
         
         # Make request to backend API
@@ -2244,13 +2215,6 @@ def generate_streaming_response(url, headers, payload, model, subaccount_name):
     """
     # Log the raw request body and payload being forwarded
     logging.info(f"Raw request received (streaming): {json.dumps(request.json, indent=2)}")
-    if payload.get("stream") and "reasoning" not in payload:
-        try:
-            payload = payload.copy()
-            payload["reasoning"] = {"enabled": True}
-            logging.debug("generate_streaming_response: Injected reasoning.enabled=true into payload")
-        except Exception as e:
-            logging.warning(f"generate_streaming_response: Could not inject reasoning flag: {e}")
     logging.info(f"Forwarding payload to API (streaming): {json.dumps(payload, indent=2)}")
     
     buffer = ""
