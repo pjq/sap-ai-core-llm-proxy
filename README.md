@@ -8,6 +8,8 @@ So it is compatible with any application that supports the OpenAI API, so you ca
 - Cline
 - Lobe Chat
 - Claude Code [(Claude Code Guideline)](./docs/ClaudeCodeGuideline.md)
+- OpenAI Codex
+- Open Code
 - ChatWise
 - Or [Chitchat](https://github.com/pjq/ChitChat/)
 - Or [ChatCat](https://github.com/pjq/ChatCat/) 
@@ -291,6 +293,46 @@ You: Hello who are you
 Assistant: Hello! I'm an AI language model created by OpenAI. I'm here to help you with a wide range of questions and tasks. How can I assist you today?
 You: 
 ```
+
+## OpenAI Codex Integration
+
+You can use the SAP AI Core with the OpenAI Codex CLI via the Proxy Server
+
+Install codex
+```shell
+npm install -g @openai/codex
+```
+
+Create the codex config.toml
+```shell
+vim  ~/.codex/config.toml
+```
+
+Update the config.toml
+```toml
+model_provider="sapaicore"
+model="gpt-5"
+
+[model_providers.sapaicore]
+name="SAP AI Core"
+wire_api="chat"            
+base_url="http://127.0.0.1:3001/v1"  
+env_key="OPENAI_API_KEY"    
+```
+
+Set your API key (must match one of secret_authentication_tokens in the proxy server config.json):
+
+```shell
+export OPENAI_API_KEY=your_secret_key
+```
+
+Then run codex
+```shell
+codex
+```
+
+For more codex config please check 
+- https://github.com/openai/codex/blob/main/docs/config.md
 
 ## Cursor(AI IDE) Integration with SAP AI Core
 You can run the proxy_server in your public server, then you can update the base_url in the Cursor model settings.
