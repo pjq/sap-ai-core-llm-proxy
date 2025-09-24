@@ -398,6 +398,63 @@ cat ~/.claude-code-router/config.json
 Add Provider->Provider Type -> OpenAI
 
 - API Key: will be one of secret_authentication_tokens. 
+
+## Deploy with Docker
+
+You can run the proxy server in a container. A `Dockerfile` is provided.
+
+### Build the image
+```sh
+docker build -t sap-ai-core-llm-proxy:latest .
+```
+
+### Prepare configuration
+- Ensure you have a `config.json` in the project root (or elsewhere) with your subAccounts and models.
+- Ensure you have your SAP AI Core SDK config at `~/.aicore/config.json` on the host if using the SDK for Anthropic Claude.
+
+Example SDK config path on host:
+```sh
+mkdir -p ~/.aicore
+vim ~/.aicore/config.json
+```
+
+### Run the container
+```sh
+docker run --rm \
+  -p 3001:3001 \
+  -e PORT=3001 \
+  -e HOST=0.0.0.0 \
+  -e CONFIG_PATH=/app/config.json \
+  -v $(pwd)/config.json:/app/config.json:ro \
+  -v $HOME/.aicore:/root/.aicore:ro \
+  --name sap-aicore-llm-proxy \
+  sap-ai-core-llm-proxy:latest
+```
+
+Notes:
+- Map your `config.json` into the container and point `CONFIG_PATH` accordingly.
+- Mount your `~/.aicore` directory (read-only) to provide SAP AI Core SDK credentials for Anthropic Claude (`/v1/messages`).
+- The service will listen on `0.0.0.0:3001` inside the container and be available on the host at `http://localhost:3001`.
+
+### Run with debug logs
+```sh
+docker run --rm \
+  -p 3001:3001 \
+  -e PORT=3001 \
+  -e HOST=0.0.0.0 \
+  -e CONFIG_PATH=/app/config.json \
+  -e DEBUG=1 \
+  -v $(pwd)/config.json:/app/config.json:ro \
+  -v $HOME/.aicore:/root/.aicore:ro \
+  --name sap-aicore-llm-proxy \
+  sap-ai-core-llm-proxy:latest
+```
+
+### Verify
+```sh
+curl http://localhost:3001/v1/models
+```
+You should see your configured models returned.
 - API Host: http://127.0.0.1:3001
 - Add Models: models you configured in the `deployment_models` 
 
