@@ -93,6 +93,39 @@ proxy_config = ProxyConfig()
 
 app = Flask(__name__)
 
+# ------------------------
+# SAP AI SDK session/client cache for performance
+# ------------------------
+# Creating a new SDK Session()/client per request is expensive. Reuse a process-wide
+# Session and cache clients per model in a thread-safe manner.
+_sdk_session = None
+_sdk_session_lock = threading.Lock()
+_bedrock_clients: Dict[str, Any] = {}
+_bedrock_clients_lock = threading.Lock()
+
+def get_sapaicore_sdk_session() -> Session:
+    """Lazily initialize and return a global SAP AI Core SDK Session."""
+    global _sdk_session
+    if _sdk_session is None:
+        with _sdk_session_lock:
+            if _sdk_session is None:
+                logging.info("Initializing global SAP AI SDK Session")
+                _sdk_session = Session()
+    return _sdk_session
+
+def get_sapaicore_sdk_client(model_name: str):
+    """Get or create a cached SAP AI Core (Bedrock) client for the given model."""
+    client = _bedrock_clients.get(model_name)
+    if client is not None:
+        return client
+    with _bedrock_clients_lock:
+        client = _bedrock_clients.get(model_name)
+        if client is None:
+            logging.info(f"Creating SAP AI SDK client for model '{model_name}'")
+            client = get_sapaicore_sdk_session().client(model_name=model_name)
+            _bedrock_clients[model_name] = client
+    return client
+
 @app.route('/v1/embeddings', methods=['POST'])
 def handle_embedding_request():
     logging.info("Received request to /v1/embeddings")
@@ -1909,10 +1942,10 @@ def proxy_claude_request():
     stream = request_json.get("stream", False)
     
     try:
-        # Use SAP AI SDK Session to create Bedrock client for the model
-        logging.info(f"Attempting to create SAP AI SDK client for model: {model}")
-        bedrock = Session().client(model_name=model)
-        logging.info("SAP AI SDK client created successfully")
+        # Use cached SAP AI SDK client for the model
+        logging.info(f"Obtaining SAP AI SDK client for model: {model}")
+        bedrock = get_sapaicore_sdk_client(model)
+        logging.info("SAP AI SDK client ready (cached)")
         
         # Get the conversation messages
         conversation = request_json.get("messages", [])
