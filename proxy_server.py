@@ -1950,6 +1950,14 @@ def proxy_claude_request():
         # Get the conversation messages
         conversation = request_json.get("messages", [])
         logging.debug(f"Original conversation: {conversation}")
+
+        thinking_cfg_preview = request_json.get("thinking")
+        logging.info(
+            "Claude request context: stream=%s, messages=%s, has_thinking=%s",
+            stream,
+            len(conversation) if isinstance(conversation, list) else "unknown",
+            isinstance(thinking_cfg_preview, dict),
+        )
         
         # Process conversation to handle empty text content and image compression
         for message in conversation:
@@ -1982,6 +1990,48 @@ def proxy_claude_request():
         
         # Add required anthropic_version for Bedrock
         body["anthropic_version"] = "bedrock-2023-05-31"
+
+        # Ensure max_tokens obeys thinking budget constraints
+        thinking_cfg = body.get("thinking")
+        raw_max_tokens = body.get("max_tokens")
+        max_tokens_value = None
+        if raw_max_tokens is not None:
+            try:
+                max_tokens_value = int(raw_max_tokens)
+            except (TypeError, ValueError):
+                logging.warning(f"Invalid max_tokens value '{raw_max_tokens}' in request; resetting to None")
+                max_tokens_value = None
+
+        if isinstance(thinking_cfg, dict):
+            budget_tokens = thinking_cfg.get("budget_tokens")
+            if isinstance(budget_tokens, int):
+                required_min_tokens = budget_tokens + 1
+                if max_tokens_value is None or max_tokens_value <= budget_tokens:
+                    body["max_tokens"] = required_min_tokens
+                    logging.info(
+                        "Adjusted max_tokens to %s to satisfy thinking.budget_tokens=%s",
+                        required_min_tokens,
+                        budget_tokens,
+                    )
+                else:
+                    logging.debug(
+                        "max_tokens=%s already greater than thinking.budget_tokens=%s",
+                        max_tokens_value,
+                        budget_tokens,
+                    )
+            else:
+                logging.debug("No integer thinking.budget_tokens found in request")
+        elif thinking_cfg is not None:
+            logging.debug("Ignoring non-dict thinking config in request body")
+
+        if body.get("max_tokens") is not None:
+            logging.info(
+                "Final max_tokens for model %s request: %s",
+                model,
+                body["max_tokens"],
+            )
+        else:
+            logging.info("No max_tokens specified after adjustment for model %s", model)
         
         # Convert body to JSON string for Bedrock API
         body_json = json.dumps(body)
