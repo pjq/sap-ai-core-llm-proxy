@@ -1544,9 +1544,10 @@ def load_balance_url(model_name: str) -> tuple:
     if model_name not in proxy_config.model_to_subaccounts or not proxy_config.model_to_subaccounts[model_name]:
         # Check if it's a Claude or Gemini model and try fallback
         if is_claude_model(model_name):
-            logging.warning(f"Claude model '{model_name}' not found, trying fallback models")
+            logging.info(f"Claude model '{model_name}' not found, trying fallback models")
             # Try common Claude model fallbacks
-            fallback_models = ["anthropic--claude-4-sonnet"]
+            #fallback_models = ["anthropic--claude-4-sonnet"]
+            fallback_models = ["anthropic--claude-4.5-sonnet"]
             for fallback in fallback_models:
                 if fallback in proxy_config.model_to_subaccounts and proxy_config.model_to_subaccounts[fallback]:
                     logging.info(f"Using fallback Claude model '{fallback}' for '{model_name}'")
@@ -1556,7 +1557,7 @@ def load_balance_url(model_name: str) -> tuple:
                 logging.error(f"No Claude models available in any subAccount")
                 raise ValueError(f"Claude model '{model_name}' and fallbacks not available in any subAccount")
         elif is_gemini_model(model_name):
-            logging.warning(f"Gemini model '{model_name}' not found, trying fallback models")
+            logging.info(f"Gemini model '{model_name}' not found, trying fallback models")
             # Try common Gemini model fallbacks
             fallback_models = ["gemini-2.5-pro"]
             for fallback in fallback_models:
@@ -1909,8 +1910,9 @@ def proxy_claude_request():
     # Get request body and extract model
     request_json = request.get_json(cache=False)
     request_model = request_json.get("model")
+    logging.info(f"request_model is: {request_model}")
     # Hardcode to claude-3-5-haiku-20241022 if no model specified
-    request_model = "anthropic--claude-4-sonnet"
+    request_model = "anthropic--claude-4.5-sonnet"
     logging.info(f"hardcode request_model to: {request_model}")
     
     if not request_model:
