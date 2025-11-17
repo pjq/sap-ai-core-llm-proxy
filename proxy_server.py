@@ -1997,6 +1997,23 @@ def proxy_claude_request():
         if "context_management" in body:
             body.pop("context_management", None)
             logging.info("Removed unsupported field 'context_management' from request body")
+        
+
+        # Remove unsupported fields inside tools for Bedrock
+        tools_list = body.get("tools")
+        removed_count = 0
+        if isinstance(tools_list, list):
+            for idx, tool in enumerate(tools_list):
+                if isinstance(tool, dict):
+                    # Remove top-level input_examples
+                    if "input_examples" in tool:
+                        tool.pop("input_examples", None)
+                        removed_count += 1
+                    # Remove nested custom.input_examples
+                    custom = tool.get("custom")
+                    if isinstance(custom, dict) and "input_examples" in custom:
+                        custom.pop("input_examples", None)
+                        removed_count += 1
 
         # Ensure max_tokens obeys thinking budget constraints
         thinking_cfg = body.get("thinking")
