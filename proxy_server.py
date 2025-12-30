@@ -439,6 +439,32 @@ def convert_openai_to_claude37(payload):
                         elif isinstance(item, str):
                              # Convert string item to block format
                             validated_content.append({"text": item})
+                        elif isinstance(item, dict) and item.get("type") == "image_url":
+                            # Convert OpenAI image_url format to AWS Bedrock Converse image format
+                            image_url = item.get("image_url", {}).get("url", "")
+                            if image_url.startswith("data:"):
+                                # Parse data URL format: data:image/png;base64,<data>
+                                try:
+                                    header, data = image_url.split(",", 1)
+                                    media_type = header.split(";")[0].split(":")[1]  # e.g., "image/png"
+                                    # Extract format (png, jpeg, gif, webp) from media type
+                                    image_format = media_type.split("/")[1] if "/" in media_type else "png"
+
+                                    # AWS Bedrock Converse API format
+                                    converse_image = {
+                                        "image": {
+                                            "format": image_format,
+                                            "source": {
+                                                "bytes": data
+                                            }
+                                        }
+                                    }
+                                    validated_content.append(converse_image)
+                                    logging.info(f"Converted image_url to AWS Bedrock Converse format with format: {image_format}")
+                                except Exception as e:
+                                    logging.error(f"Failed to parse image data URL: {e}")
+                            else:
+                                logging.warning(f"Unsupported image_url format (only data URLs supported): {image_url[:100]}")
                         else:
                             logging.warning(f"Skipping invalid content block for role {role}: {item}")
                     
