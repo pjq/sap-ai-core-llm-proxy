@@ -1706,11 +1706,11 @@ def handle_gemini_request(payload, model="gemini-2.5-pro"):
 
 def handle_default_request(payload, model="gpt-4o"):
     """Handle default (non-Claude, non-Gemini) model request with multi-subAccount support.
-    
+
     Args:
         payload: Request payload from client
         model: The model name to use
-        
+
     Returns:
         Tuple of (endpoint_url, modified_payload, subaccount_name)
     """
@@ -1726,7 +1726,7 @@ def handle_default_request(payload, model="gpt-4o"):
             selected_url, subaccount_name, _, model = load_balance_url(fallback_model)
         except ValueError:
             raise ValueError(f"No valid model found for '{model}' or fallback in any subAccount")
-    
+
     # Determine API version based on model
     if any(m in model for m in ["o3", "o4-mini", "o3-mini"]):
         api_version = "2024-12-01-preview"
@@ -1738,10 +1738,22 @@ def handle_default_request(payload, model="gpt-4o"):
         # Add checks for other potentially unsupported parameters if needed
     else:
         api_version = "2023-05-15"
-        modified_payload = payload
-    
+        modified_payload = payload.copy()
+
+    # Remove reasoning-related parameters for GPT models
+    # These parameters are Claude-specific and not supported by OpenAI GPT models
+    unsupported_params = ['reasoning', 'reasoning_effort']
+    removed_params = []
+    for param in unsupported_params:
+        if param in modified_payload:
+            del modified_payload[param]
+            removed_params.append(param)
+
+    if removed_params:
+        logging.info(f"Removed unsupported parameters for GPT model '{model}': {', '.join(removed_params)}")
+
     endpoint_url = f"{selected_url.rstrip('/')}/chat/completions?api-version={api_version}"
-    
+
     logging.info(f"handle_default_request: {endpoint_url} (subAccount: {subaccount_name})")
     return endpoint_url, modified_payload, subaccount_name
 
