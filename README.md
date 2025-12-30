@@ -1,6 +1,6 @@
 # sap-ai-core LLM Proxy Server
 
-This project establishes a proxy server to interface with SAP AI Core services, it transform the SAP AI Core LLM API to Open AI Compatible API, no matter it's gpt-4o or claude sonnet 4.
+This project establishes a proxy server to interface with SAP AI Core services, it transform the SAP AI Core LLM API to Open AI Compatible API, no matter it's GPT-5, Claude Sonnet 4.5, or Google Gemini 2.5 Pro.
 
 So it is compatible with any application that supports the OpenAI API, so you can use the SAP AI Core in other Applications, e.g. 
 - [Cursor IDE](https://www.cursor.com/) 
@@ -50,13 +50,25 @@ e.g.
   "data": [
     {
       "created": 1750833737,
-      "id": "4-sonnet",
+      "id": "gpt-5",
       "object": "model",
       "owned_by": "sap-ai-core"
     },
     {
       "created": 1750833737,
-      "id": "anthropic/claude-4-sonnet",
+      "id": "4.5-sonnet",
+      "object": "model",
+      "owned_by": "sap-ai-core"
+    },
+    {
+      "created": 1750833737,
+      "id": "anthropic--claude-4.5-sonnet",
+      "object": "model",
+      "owned_by": "sap-ai-core"
+    },
+    {
+      "created": 1750833737,
+      "id": "gemini-2.5-pro",
       "object": "model",
       "owned_by": "sap-ai-core"
     }
@@ -75,8 +87,8 @@ The proxy server now supports OpenAI-compatible embeddings API:
 `sap-ai-core-llm-proxy` is a Python-based project that includes functionalities for token management, forwarding requests to the SAP AI Core API, and handling responses. The project uses Flask to implement the proxy server.
 
 Now it supports the following LLM models
-- OpenAI: gpt-4o, gpt-4.1, gpt-o3-mini, gpt-o3, gpt-o4-mini
-- Claude: 3.5-sonnet, 3.7-sonnet, 4-sonnet
+- OpenAI: gpt-4o, gpt-4.1, gpt-5, gpt-o3-mini, gpt-o3, gpt-o4-mini
+- Claude: 3.5-sonnet, 3.7-sonnet, 4-sonnet, 4.5-sonnet
 - Google Gemini: gemini-2.5-pro
 
 ## Features
