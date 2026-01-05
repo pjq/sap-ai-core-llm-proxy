@@ -16,6 +16,8 @@ import ast
 import atexit
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any
+from werkzeug.serving import make_server
+from concurrent.futures import ThreadPoolExecutor
 
 # SAP AI SDK imports
 from gen_ai_hub.proxy.core.utils import kwargs_if_set
@@ -2989,6 +2991,15 @@ if __name__ == '__main__':
     logging.info(f"  - Models Listing: http://{host}:{port}/v1/models")
     logging.info(f"  - Embeddings API: http://{host}:{port}/v1/embeddings")
 
-    # Run with threaded=True to handle concurrent requests properly
-    # Note: For production use, consider using gunicorn or another production WSGI server
-    app.run(host=host, port=port, debug=args.debug, threaded=True)
+    # Try to use waitress if available (production server)
+    # Otherwise fall back to Flask dev server with thread limiting
+    try:
+        from waitress import serve
+        logging.info("Using Waitress production server (threads=40, connection_limit=1000)")
+        logging.info("To install waitress: pip3 install waitress")
+        serve(app, host=host, port=port, threads=40, connection_limit=1000, cleanup_interval=30, channel_timeout=120)
+    except ImportError:
+        logging.warning("Waitress not available, using Flask development server")
+        logging.warning("For production use, install waitress: pip3 install waitress")
+        logging.warning("Flask dev server has limitations with many persistent connections")
+        app.run(host=host, port=port, debug=args.debug, threaded=True)
