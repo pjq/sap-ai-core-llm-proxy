@@ -133,9 +133,9 @@ app.config['JSON_SORT_KEYS'] = False
 @app.after_request
 def after_request_cleanup(response):
     """Ensure connections are closed after each request"""
-    # Force connection close for HTTP/1.0 clients
-    if request.environ.get('SERVER_PROTOCOL') == 'HTTP/1.0':
-        response.headers['Connection'] = 'close'
+    # Force connection close to prevent connection pooling on client side
+    # This prevents accumulation of stale client connections
+    response.headers['Connection'] = 'close'
     return response
 
 # ------------------------
@@ -2988,4 +2988,7 @@ if __name__ == '__main__':
     logging.info(f"  - Anthropic Claude API: http://{host}:{port}/v1/messages")
     logging.info(f"  - Models Listing: http://{host}:{port}/v1/models")
     logging.info(f"  - Embeddings API: http://{host}:{port}/v1/embeddings")
-    app.run(host=host, port=port, debug=args.debug)
+
+    # Run with threaded=True to handle concurrent requests properly
+    # Note: For production use, consider using gunicorn or another production WSGI server
+    app.run(host=host, port=port, debug=args.debug, threaded=True)
