@@ -134,10 +134,10 @@ app.config['JSON_SORT_KEYS'] = False
 
 @app.after_request
 def after_request_cleanup(response):
-    """Ensure connections are closed after each request"""
-    # Force connection close to prevent connection pooling on client side
-    # This prevents accumulation of stale client connections
-    response.headers['Connection'] = 'close'
+    """Cleanup after each request"""
+    # Note: Don't set Connection header - it's a "hop-by-hop" header
+    # that WSGI servers (like Waitress) manage themselves per PEP 3333
+    # Waitress will handle connection lifecycle properly
     return response
 
 # ------------------------
