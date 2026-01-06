@@ -1,6 +1,8 @@
 import logging
 from flask import Flask, request, jsonify, Response, stream_with_context
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import time
 import threading
 import json
@@ -11,8 +13,11 @@ from datetime import datetime
 import argparse
 import re
 import ast
+import atexit
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any
+from werkzeug.serving import make_server
+from concurrent.futures import ThreadPoolExecutor
 
 # SAP AI SDK imports
 from gen_ai_hub.proxy.core.utils import kwargs_if_set
@@ -91,7 +96,49 @@ class ProxyConfig:
 # Global configuration
 proxy_config = ProxyConfig()
 
+# ------------------------
+# HTTP Session with Connection Pool Management
+# ------------------------
+def create_http_session():
+    """Create a requests Session with connection pooling and proper cleanup"""
+    session = requests.Session()
+
+    # Configure retry strategy
+    retry_strategy = Retry(
+        total=3,
+        backoff_factor=1,
+        status_forcelist=[429, 500, 502, 503, 504],
+    )
+
+    # Configure adapter with connection pool limits
+    adapter = HTTPAdapter(
+        max_retries=retry_strategy,
+        pool_connections=10,      # Number of connection pools
+        pool_maxsize=20,          # Max connections per pool
+        pool_block=False          # Don't block when pool is full
+    )
+
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+
+    return session
+
+# Create global session (reuse across requests)
+_http_session = create_http_session()
+
 app = Flask(__name__)
+
+# Configure Flask to close connections properly
+app.config['JSONIFY_PRETTYPRINT_REGULAR'] = False
+app.config['JSON_SORT_KEYS'] = False
+
+@app.after_request
+def after_request_cleanup(response):
+    """Cleanup after each request"""
+    # Note: Don't set Connection header - it's a "hop-by-hop" header
+    # that WSGI servers (like Waitress) manage themselves per PEP 3333
+    # Waitress will handle connection lifecycle properly
+    return response
 
 # ------------------------
 # SAP AI SDK session/client cache for performance
@@ -152,9 +199,11 @@ def handle_embedding_request():
             "AI-Resource-Group": resource_group,
             "AI-Tenant-Id": service_key.identityzoneid
         }
-        response = requests.post(endpoint_url, headers=headers, json=modified_payload)
+        response = _http_session.post(endpoint_url, headers=headers, json=modified_payload)
         response.raise_for_status()
-        return jsonify(format_embedding_response(response.json(), model)), 200
+        result = jsonify(format_embedding_response(response.json(), model)), 200
+        response.close()
+        return result
     except Exception as e:
         logging.error(f"Error handling embedding request: {e}")
         return jsonify({"error": str(e)}), 500
@@ -291,11 +340,14 @@ def fetch_token(subaccount_name: str) -> str:
         headers = {"Authorization": f"Basic {encoded_auth}"}
 
         try:
-            response = requests.post(token_url, headers=headers, timeout=15)
+            response = _http_session.post(token_url, headers=headers, timeout=15)
             response.raise_for_status()
-            
+
             token_data = response.json()
             new_token = token_data.get('access_token')
+
+            # Explicitly close the response to release connection
+            response.close()
             
             # Check for empty token
             if not new_token:
@@ -2247,9 +2299,10 @@ def proxy_claude_request_original():
         logging.info(f"Forwarding converted request to {endpoint_url} for subAccount '{subaccount_name}'")
 
         if not is_stream:
-            backend_response = requests.post(endpoint_url, headers=headers, json=backend_payload, timeout=600)
+            backend_response = _http_session.post(endpoint_url, headers=headers, json=backend_payload, timeout=600)
             backend_response.raise_for_status()
             backend_json = backend_response.json()
+            backend_response.close()  # Close connection
 
             if is_gemini_model(model):
                 final_response = convert_gemini_response_to_claude(backend_json, model)
@@ -2288,24 +2341,25 @@ def proxy_claude_request_original():
 
 def handle_non_streaming_request(url, headers, payload, model, subaccount_name):
     """Handle non-streaming request to backend API.
-    
+
     Args:
         url: Backend API endpoint URL
         headers: Request headers
         payload: Request payload
         model: Model name
         subaccount_name: Name of the selected subAccount
-    
+
     Returns:
         Flask response with the API result
     """
+    response = None  # Initialize for cleanup in finally block
     try:
         # Log the raw request body and payload being forwarded
         logging.info(f"Raw request received (non-streaming): {json.dumps(request.json, indent=2)}")
         logging.info(f"Forwarding payload to API (non-streaming): {json.dumps(payload, indent=2)}")
-        
-        # Make request to backend API
-        response = requests.post(url, headers=headers, json=payload, timeout=600)
+
+        # Make request to backend API using session
+        response = _http_session.post(url, headers=headers, json=payload, timeout=600)
         response.raise_for_status()
         logging.info(f"Non-streaming request succeeded for model '{model}' using subAccount '{subaccount_name}'")
         
@@ -2350,6 +2404,11 @@ def handle_non_streaming_request(url, headers, payload, model, subaccount_name):
         logging.error(f"Error in non-streaming request: {err}", exc_info=True)
         return jsonify({"error": str(err)}), 500
 
+    finally:
+        # Always close the response to release the connection
+        if response is not None:
+            response.close()
+
 
 def generate_streaming_response(url, headers, payload, model, subaccount_name):
     """Generate streaming response from backend API.
@@ -2372,9 +2431,9 @@ def generate_streaming_response(url, headers, payload, model, subaccount_name):
     total_tokens = 0
     claude_metadata = {}  # For Claude 3.7 metadata
     chunk = None  # Initialize chunk variable to avoid reference errors
-    
-    # Make streaming request to backend
-    with requests.post(url, headers=headers, json=payload, stream=True, timeout=600) as response:
+
+    # Make streaming request to backend using session
+    with _http_session.post(url, headers=headers, json=payload, stream=True, timeout=600) as response:
         try:
             response.raise_for_status()
             
@@ -2614,7 +2673,7 @@ def generate_claude_streaming_response(url, headers, payload, model, subaccount_
     if is_claude_model(model):
         logging.info(f"Backend is Claude model, converting response format for '{model}'")
         try:
-            with requests.post(url, headers=headers, json=payload, stream=True, timeout=600) as response:
+            with _http_session.post(url, headers=headers, json=payload, stream=True, timeout=600) as response:
                 response.raise_for_status()
                 logging.debug(f"Claude backend response status: {response.status_code}")
                 
@@ -2746,7 +2805,7 @@ def generate_claude_streaming_response(url, headers, payload, model, subaccount_
     delta_count = 0
 
     try:
-        with requests.post(url, headers=headers, json=payload, stream=True, timeout=600) as response:
+        with _http_session.post(url, headers=headers, json=payload, stream=True, timeout=600) as response:
             response.raise_for_status()
             logging.debug(f"Backend response status: {response.status_code}")
             logging.debug(f"Backend response headers: {dict(response.headers)}")
@@ -2837,6 +2896,18 @@ def generate_claude_streaming_response(url, headers, payload, model, subaccount_
     logging.info(f"Claude streaming response completed for model '{model}' with {delta_count} content deltas")
 
 
+# ------------------------
+# Cleanup on shutdown
+# ------------------------
+def cleanup_on_exit():
+    """Cleanup resources on server shutdown"""
+    logging.info("Cleaning up HTTP session...")
+    _http_session.close()
+    logging.info("Server shutdown complete")
+
+atexit.register(cleanup_on_exit)
+
+
 if __name__ == '__main__':
     args = parse_arguments()
     
@@ -2919,4 +2990,16 @@ if __name__ == '__main__':
     logging.info(f"  - Anthropic Claude API: http://{host}:{port}/v1/messages")
     logging.info(f"  - Models Listing: http://{host}:{port}/v1/models")
     logging.info(f"  - Embeddings API: http://{host}:{port}/v1/embeddings")
-    app.run(host=host, port=port, debug=args.debug)
+
+    # Try to use waitress if available (production server)
+    # Otherwise fall back to Flask dev server with thread limiting
+    try:
+        from waitress import serve
+        logging.info("Using Waitress production server (threads=40, connection_limit=1000)")
+        logging.info("To install waitress: pip3 install waitress")
+        serve(app, host=host, port=port, threads=40, connection_limit=1000, cleanup_interval=30, channel_timeout=120)
+    except ImportError:
+        logging.warning("Waitress not available, using Flask development server")
+        logging.warning("For production use, install waitress: pip3 install waitress")
+        logging.warning("Flask dev server has limitations with many persistent connections")
+        app.run(host=host, port=port, debug=args.debug, threaded=True)
