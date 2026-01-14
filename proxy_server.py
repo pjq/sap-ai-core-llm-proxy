@@ -1617,44 +1617,9 @@ def load_balance_url(model_name: str) -> tuple:
     
     # Get list of subAccounts that have this model
     if model_name not in proxy_config.model_to_subaccounts or not proxy_config.model_to_subaccounts[model_name]:
-        # Check if it's a Claude or Gemini model and try fallback
-        if is_claude_model(model_name):
-            logging.info(f"Claude model '{model_name}' not found, trying fallback models")
-            # Try common Claude model fallbacks
-            #fallback_models = ["anthropic--claude-4-sonnet"]
-            fallback_models = ["anthropic--claude-4.5-sonnet"]
-            for fallback in fallback_models:
-                if fallback in proxy_config.model_to_subaccounts and proxy_config.model_to_subaccounts[fallback]:
-                    logging.info(f"Using fallback Claude model '{fallback}' for '{model_name}'")
-                    model_name = fallback
-                    break
-            else:
-                logging.error(f"No Claude models available in any subAccount")
-                raise ValueError(f"Claude model '{model_name}' and fallbacks not available in any subAccount")
-        elif is_gemini_model(model_name):
-            logging.info(f"Gemini model '{model_name}' not found, trying fallback models")
-            # Try common Gemini model fallbacks
-            fallback_models = ["gemini-2.5-pro"]
-            for fallback in fallback_models:
-                if fallback in proxy_config.model_to_subaccounts and proxy_config.model_to_subaccounts[fallback]:
-                    logging.info(f"Using fallback Gemini model '{fallback}' for '{model_name}'")
-                    model_name = fallback
-                    break
-            else:
-                logging.error(f"No Gemini models available in any subAccount")
-                raise ValueError(f"Gemini model '{model_name}' and fallbacks not available in any subAccount")
-        else:
-            # For other models, try common fallbacks
-            logging.warning(f"Model '{model_name}' not found, trying fallback models")
-            fallback_models = ["gpt-5"]
-            for fallback in fallback_models:
-                if fallback in proxy_config.model_to_subaccounts and proxy_config.model_to_subaccounts[fallback]:
-                    logging.info(f"Using fallback model '{fallback}' for '{model_name}'")
-                    model_name = fallback
-                    break
-            else:
-                logging.error(f"No subAccounts with model '{model_name}' or fallbacks found")
-                raise ValueError(f"Model '{model_name}' and fallbacks not available in any subAccount")
+        # Model not found, raise error
+        logging.error(f"Model '{model_name}' not found in any subAccount")
+        raise ValueError(f"Model '{model_name}' not available in any subAccount")
     
     subaccount_names = proxy_config.model_to_subaccounts[model_name]
     
@@ -2009,12 +1974,67 @@ def proxy_claude_request():
     try:
         selected_url, subaccount_name, resource_group, model = load_balance_url(request_model)
     except ValueError as e:
-        logging.error(f"Model validation failed: {e}")
-        model = request_model
-        # return jsonify({
-        #     "type": "error",
-        #     "error": {"type": "invalid_request_error", "message": f"Model '{request_model}' not available"}
-        # }), 400
+        # Model not found, try to find any Claude/Sonnet model as fallback
+        logging.warning(f"Model '{request_model}' not found, searching for Claude/Sonnet fallback")
+
+        # Search for available Claude/Sonnet models
+        fallback_model = None
+        available_models = list(proxy_config.model_to_subaccounts.keys())
+
+        # First, try to find models with both "claude" and "sonnet"
+        # Prefer newer versions: 4.5 > 4 > 3.7 > 3.5
+        priority_versions = ["4.5", "4-", "3.7", "3.5", "3-"]
+        for version in priority_versions:
+            for model_name in available_models:
+                model_lower = model_name.lower()
+                if "claude" in model_lower and "sonnet" in model_lower and version in model_name:
+                    fallback_model = model_name
+                    logging.info(f"Found Claude Sonnet {version} model: {fallback_model}")
+                    break
+            if fallback_model:
+                break
+
+        # If still no match, just find any claude+sonnet
+        if not fallback_model:
+            for model_name in available_models:
+                model_lower = model_name.lower()
+                if "claude" in model_lower and "sonnet" in model_lower:
+                    fallback_model = model_name
+                    logging.info(f"Found Claude Sonnet model: {fallback_model}")
+                    break
+
+        # If no claude+sonnet found, try to find any model with "claude"
+        if not fallback_model:
+            for model_name in available_models:
+                if "claude" in model_name.lower():
+                    fallback_model = model_name
+                    logging.info(f"Found Claude model: {fallback_model}")
+                    break
+
+        # If no claude found, try to find any model with "sonnet"
+        if not fallback_model:
+            for model_name in available_models:
+                if "sonnet" in model_name.lower():
+                    fallback_model = model_name
+                    logging.info(f"Found Sonnet model: {fallback_model}")
+                    break
+
+        if fallback_model:
+            try:
+                selected_url, subaccount_name, resource_group, model = load_balance_url(fallback_model)
+                logging.info(f"Successfully using fallback model '{fallback_model}' for '{request_model}'")
+            except ValueError as fallback_error:
+                logging.error(f"Fallback model '{fallback_model}' failed: {fallback_error}")
+                return jsonify({
+                    "type": "error",
+                    "error": {"type": "invalid_request_error", "message": f"Model '{request_model}' not available and fallback failed"}
+                }), 400
+        else:
+            logging.error(f"No Claude/Sonnet models available for fallback")
+            return jsonify({
+                "type": "error",
+                "error": {"type": "invalid_request_error", "message": f"Model '{request_model}' not available and no Claude/Sonnet fallback found"}
+            }), 400
 
     # Check if this is an Anthropic model that should use the SDK
     if not is_claude_model(model):
