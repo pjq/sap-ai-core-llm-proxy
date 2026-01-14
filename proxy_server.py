@@ -59,11 +59,8 @@ class SubAccountConfig:
         )
         
     def normalize_model_names(self):
-        """Normalize model names by removing prefixes like 'anthropic--'"""
-        self.normalized_models = {
-            key.replace("anthropic--", ""): value 
-            for key, value in self.deployment_models.items()
-        }
+        """Keep model names as-is without removing any prefixes"""
+        self.normalized_models = self.deployment_models.copy()
 
 @dataclass
 class ProxyConfig:
@@ -2001,10 +1998,7 @@ def proxy_claude_request():
     request_json = request.get_json(cache=False)
     request_model = request_json.get("model")
     logging.info(f"request_model is: {request_model}")
-    # Hardcode to claude-3-5-haiku-20241022 if no model specified
-    request_model = "anthropic--claude-4.5-sonnet"
-    logging.info(f"hardcode request_model to: {request_model}")
-    
+
     if not request_model:
         return jsonify({
             "type": "error", 
@@ -2942,10 +2936,8 @@ if __name__ == '__main__':
         secret_authentication_tokens = config['secret_authentication_tokens']
         resource_group = config['resource_group']
         
-        # Normalize model_deployment_urls keys
-        normalized_model_deployment_urls = {
-            key.replace("anthropic--", ""): value for key, value in model_deployment_urls.items()
-        }
+        # Keep model_deployment_urls keys as-is
+        normalized_model_deployment_urls = model_deployment_urls.copy()
 
         # Load service key
         service_key = load_config(service_key_json)
