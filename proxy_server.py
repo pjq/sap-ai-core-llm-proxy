@@ -23,6 +23,20 @@ from concurrent.futures import ThreadPoolExecutor
 from gen_ai_hub.proxy.core.utils import kwargs_if_set
 from gen_ai_hub.proxy.native.amazon.clients import Session
 
+# Monkey patch to fix client_type compatibility issue between gen_ai_hub and ai_core_sdk
+# The gen_ai_hub library passes 'client_type' parameter that ai_core_sdk 2.6.2 doesn't accept
+from ai_core_sdk.ai_core_v2_client import AICoreV2Client
+_original_from_env = AICoreV2Client.from_env
+
+@staticmethod
+def _patched_from_env(profile_name: str = None, **kwargs):
+    """Patched version of from_env that filters out unsupported 'client_type' parameter."""
+    # Remove client_type from kwargs as it's not supported in ai_core_sdk 2.6.2
+    kwargs.pop('client_type', None)
+    return _original_from_env(profile_name=profile_name, **kwargs)
+
+AICoreV2Client.from_env = _patched_from_env
+
 
 
 @dataclass

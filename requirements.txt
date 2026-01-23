@@ -1,6 +1,8 @@
 flask
-ai_core_sdk
+# SAP AI SDK - Note: proxy_server.py includes a monkey patch to fix client_type compatibility
+# between sap-ai-sdk-gen (gen_ai_hub) and ai_core_sdk 2.6.2
+ai_core_sdk>=2.6.2
 openai
 litellm
-sap-ai-sdk-gen[all]
+sap-ai-sdk-gen[all]>=5.10.0
 aioboto3
