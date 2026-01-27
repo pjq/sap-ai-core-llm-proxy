@@ -2289,6 +2289,7 @@ def proxy_claude_request():
                                 usage = chunk.get("usage", {})
                                 if usage:
                                     completion_tokens = usage.get("output_tokens", completion_tokens)
+                                    logging.info(f"[{request_id}] Extracted tokens from message_delta: completion={completion_tokens}")
 
                             # Extract token usage from message_start chunks
                             elif chunk_type == "message_start":
@@ -2298,6 +2299,7 @@ def proxy_claude_request():
                                     prompt_tokens = usage.get("input_tokens", 0)
                                     completion_tokens = usage.get("output_tokens", 0)
                                     total_tokens = prompt_tokens + completion_tokens
+                                    logging.info(f"[{request_id}] Extracted tokens from message_start: prompt={prompt_tokens}, completion={completion_tokens}, total={total_tokens}")
 
                             # Handle different chunk types according to Claude streaming format
                             if chunk_type == "message_start":
@@ -2368,6 +2370,7 @@ def proxy_claude_request():
                     prompt_tokens = usage.get("input_tokens", 0)
                     completion_tokens = usage.get("output_tokens", 0)
                     total_tokens = prompt_tokens + completion_tokens
+                    logging.info(f"[{request_id}] Non-streaming token usage - prompt={prompt_tokens}, completion={completion_tokens}, total={total_tokens}")
 
                     # Calculate request duration
                     duration_ms = int((time.time() - start_time) * 1000)
