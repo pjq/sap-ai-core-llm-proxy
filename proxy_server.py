@@ -2967,11 +2967,6 @@ def maintain_connection_pool():
         except Exception as e:
             logging.error(f"Error in connection pool maintenance: {e}")
 
-# Start maintenance thread
-maintenance_thread = threading.Thread(target=maintain_connection_pool, daemon=True)
-maintenance_thread.start()
-logging.info("Started connection pool maintenance thread")
-
 
 if __name__ == '__main__':
     args = parse_arguments()
@@ -3054,6 +3049,11 @@ if __name__ == '__main__':
     logging.info(f"  - Anthropic Claude API: http://{host}:{port}/v1/messages")
     logging.info(f"  - Models Listing: http://{host}:{port}/v1/models")
     logging.info(f"  - Embeddings API: http://{host}:{port}/v1/embeddings")
+
+    # Start connection pool maintenance thread
+    maintenance_thread = threading.Thread(target=maintain_connection_pool, daemon=True)
+    maintenance_thread.start()
+    logging.info("Started connection pool maintenance thread")
 
     # Try to use waitress if available (production server)
     # Otherwise fall back to Flask dev server with thread limiting
