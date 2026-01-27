@@ -2030,7 +2030,11 @@ def proxy_openai_stream():
 @app.route('/v1/messages', methods=['POST'])
 def proxy_claude_request():
     """Handles requests that are compatible with the Anthropic Claude Messages API using SAP AI SDK."""
-    logging.info("Received request to /v1/messages")
+    # Track request timing and ID for logging
+    start_time = time.time()
+    request_id = f"{int(start_time * 1000)}-{random.randint(1000, 9999)}"
+
+    logging.info(f"[{request_id}] Received request to /v1/messages")
     logging.debug(f"Request headers: {request.headers}")
     logging.debug(f"Request body:\n{json.dumps(request.get_json(), indent=4)}")
 

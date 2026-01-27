@@ -1,0 +1,232 @@
+{
+    "subAccounts": {
+        "SFMobileSH": {
+            "resource_group": "default",
+            "service_key_json": "SFMobileSH_defaultKey.json",
+            "deployment_models": {
+                "gpt-4o-disable": [
+                    "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/ddbe89e90afebbf8"
+                ],
+                "gpt-4o": [
+                    "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/ddbe89e90afebbf8",
+                    "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/da5a56802871fbca",
+                    "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/d16511ff8ebed667",
+                    "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/d9f37f197dc72d3d",
+                    "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/d56f9d574875bb39",
+                    "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/d587dfcd64eac4d2"
+                ],
+                "gpt-4.1": [
+                    "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/d2d5f42ef1db94c9"
+                ],
+                "gpt-5": [
+                    "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/d0b202394f96d90a"
+                ],
+                "gpt-5-mini": [
+                    "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/deb4e840fa76606f"
+                ],
+                "gpt-5-nano": [
+                    "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/dbc765ccb2ddae08"
+                ],
+                "gpt-o3-mini": [
+                    "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/d95cf47bb0ec9a02"
+                ],
+                "3.7-sonnet": [
+                    "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/d28b566664a1af02"
+                ],
+                "4-sonnet": [
+                    "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/daa9d6476f84ef9e"
+                ],
+                "anthropic/claude-4-sonnet": [
+                    "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/daa9d6476f84ef9e"
+                ],
+                "anthropic/claude-3.7-sonnet": [
+                    "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/d28b566664a1af02"
+                ],
+                "3.5-sonnet": [
+                    "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/dd4d1ba461d9fa7f",
+                    "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/d1fa74a216a5f390"
+                ],
+                "4.5-sonnet": [
+                    "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/df4d05d1a5806334"
+                ],
+                "anthropic--claude-4.5-sonnet": [
+                    "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/df4d05d1a5806334"
+                ],
+                "anthropic--claude-4.5-opus": [
+			"https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/d70a0d38f3686597"
+                ]
+            }
+        },
+        "jack": {
+            "resource_group": "default",
+            "service_key_json": "jack_service_key.json",
+            "deployment_models": {
+                "gpt-4o": [
+                    "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/d00aea44d67c854e"
+                ],
+                "3.7-sonnet": [
+                    "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/d3ab9fcf755e4c8e"
+                ],
+                "anthropic/claude-3.7-sonnet": [
+                    "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/d3ab9fcf755e4c8e"
+                ],
+                "3.5-sonnet": [
+                    "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/d5c49d62bbdace2b"
+                ],
+                "gpt-o3-mini": [
+                    "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/d04a15bbeb6116d7"
+                ]
+            }
+        },
+        "steven": {
+            "resource_group": "default",
+            "service_key_json": "steven_service_key.json",
+            "deployment_models": {
+                "gpt-4o": [
+                    "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/d766ccae8d08e1fc"
+                ],
+                "3.7-sonnet": [
+                    "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/d26453b3519d276f"
+                ],
+                "anthropic/claude-3.7-sonnet": [
+                    "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/d26453b3519d276f"
+                ],
+                "3.5-sonnet": [
+                    "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/d158e1d7cdd1f7f8"
+                ],
+                "gpt-o3-mini": [
+                    "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/de7ec4d73dd65ca9"
+                ]
+            }
+        },
+        "tony": {
+            "resource_group": "default",
+            "service_key_json": "tony_service_key.json",
+            "deployment_models": {
+                "gpt-4o": [
+                    "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/dfe62d24c7a44856"
+                ],
+                "3.7-sonnet": [
+                    "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/d16998d0621c523d"
+                ],
+                "anthropic/claude-3.7-sonnet": [
+                    "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/d16998d0621c523d"
+                ],
+                "3.5-sonnet": [
+                    "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/d86b16ab1316c56c"
+                ],
+                "gpt-o3-mini": [
+                    "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/dd83a878f01cf89b"
+                ]
+            }
+        },
+        "alex": {
+            "resource_group": "default",
+            "service_key_json": "alex_service_key.json",
+            "deployment_models": {
+                "gpt-4o": [
+                    "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/dd7b47e48887dccb"
+                ],
+                "gpt-5": [
+                    "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/db6babc0a89f5f66"
+                ],
+                "4-sonnet": [
+                    "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/d0a0a6bae9be3dcf"
+                ],
+                "anthropic/claude-4-sonnet": [
+                    "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/d0a0a6bae9be3dcf"
+                ],
+                "gpt-o3-mini": [
+                    "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/d65241bca6eb04bf"
+                ]
+            }
+        },
+        "young": {
+            "resource_group": "default",
+            "service_key_json": "young_service_key.json",
+            "deployment_models": {
+                "gpt-4o": [
+                    "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/d0d072e255622667"
+                ],
+                "3.7-sonnet": [
+                    "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/d0755a29963689c5"
+                ],
+                "anthropic/claude-3.7-sonnet": [
+                    "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/d0755a29963689c5"
+                ],
+                "3.5-sonnet": [
+                    "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/db76505d4eed0ed1"
+                ],
+                "gpt-o3-mini": [
+                    "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/d3fbf417c373bdbf"
+                ]
+            }
+        },
+        "erica": {
+            "resource_group": "default",
+            "service_key_json": "erica_service_key.json",
+            "deployment_models": {
+                "3.7-sonnet": [
+                    "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/d8605887d9a3f035"
+                ],
+                "anthropic/claude-3.7-sonnet": [
+                    "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/d8605887d9a3f035"
+                ],
+                "gpt-4.1": [
+                    "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/dc83fe138cac9ec9"
+                ],
+                "4-sonnet": [
+                    "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/da9fda43321c031f"
+                ],
+                "4.5-sonnet": [
+                    "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/db73861cc34dcb30"
+                ],
+                "anthropic/claude-4-sonnet": [
+                    "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/da9fda43321c031f"
+                ],
+                "anthropic--claude-4.5-sonnet": [
+                    "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/db73861cc34dcb30"
+                ],
+                "anthropic--claude-4.5-opus": [
+			"https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/d634d26e2fd08b24"
+                ],
+                "gemini-2.5-pro": [
+                    "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/dbb4244d6b73a887"
+                ]
+            }
+        },
+        "lynn": {
+            "resource_group": "default",
+            "service_key_json": "lynn_service_key.json",
+            "deployment_models": {
+                "4-sonnet": [
+                    "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/df8352723ec219a9"
+                ],
+                "anthropic/claude-4-sonnet": [
+                    "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/df8352723ec219a9"
+                ],
+                "3.7-sonnet": [
+                    "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/d4271e14393a762a"
+                ],
+                "anthropic/claude-3.7-sonnet": [
+                    "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/d4271e14393a762a"
+                ],
+                "gpt-4.1": [
+                    "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/dc3b0c78808c5434"
+                ]
+            }
+        }
+    },
+    "secret_authentication_tokens": ["sfmobilesh-88c91d8c9c7c655134ed9e88c2ec619e",
+    "sfmobileblr-7331099aada5a8c7669c97dede24aee1",
+    "sfmobilepa-2f864c11e727cdebc6f93f228b65e82f",
+    "sfmobilereston-60f5788b69af43142cda8609bfda6354",
+    "sfmobilewef-82a6bd64d0062119cec1948b1c75f631",
+     "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",
+    "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",
+    "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", 
+    "d7024118d50251dfbc9d4940795b603b"],
+    "port": 3001,
+    "host": "0.0.0.0",
+    "hostLocal": "127.0.0.1"
+}
