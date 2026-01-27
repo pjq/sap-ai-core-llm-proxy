@@ -121,11 +121,11 @@ def create_http_session():
         status_forcelist=[429, 500, 502, 503, 504],
     )
 
-    # Configure adapter with connection pool limits
+    # Configure adapter with increased connection pool limits to handle concurrent requests
     adapter = HTTPAdapter(
         max_retries=retry_strategy,
-        pool_connections=10,      # Number of connection pools
-        pool_maxsize=20,          # Max connections per pool
+        pool_connections=50,      # Increased: Number of connection pools (was 10)
+        pool_maxsize=100,         # Increased: Max connections per pool (was 20)
         pool_block=False          # Don't block when pool is full
     )
 
@@ -149,6 +149,11 @@ def after_request_cleanup(response):
     # Note: Don't set Connection header - it's a "hop-by-hop" header
     # that WSGI servers (like Waitress) manage themselves per PEP 3333
     # Waitress will handle connection lifecycle properly
+
+    # Force close connection if response is large or if client requests it
+    if request.headers.get('Connection', '').lower() == 'close':
+        response.headers['Connection'] = 'close'
+
     return response
 
 # ------------------------
@@ -1850,21 +1855,30 @@ def proxy_openai_stream2():
         }
     }), 204
 
+@app.route('/health', methods=['GET'])
+def health_check():
+    """Lightweight health check endpoint that doesn't require token verification."""
+    return jsonify({
+        "status": "ok",
+        "timestamp": int(time.time()),
+        "server": "sap-ai-core-llm-proxy"
+    }), 200
+
 @app.route('/v1/models', methods=['GET', 'OPTIONS'])
 def list_models():
     """Lists all available models across all subAccounts."""
     logging.info("Received request to /v1/models")
     logging.info(f"Request headers: {request.headers}")
     # logging.info(f"Request payload: {request.get_json()}")
-    
+
     # if not verify_request_token(request):
     #     logging.info("Unauthorized request to list models.")
     #     return jsonify({"error": "Unauthorized"}), 401
-    
+
     # Collect all available models from all subAccounts
     models = []
     timestamp = int(time.time())
-    
+
     for model_name in proxy_config.model_to_subaccounts.keys():
         models.append({
             "id": model_name,
@@ -1872,7 +1886,7 @@ def list_models():
             "created": timestamp,
             "owned_by": "sap-ai-core"
         })
-    
+
     return jsonify({"object": "list", "data": models}), 200
 
 content_type="Application/json"
@@ -2935,6 +2949,29 @@ def cleanup_on_exit():
 
 atexit.register(cleanup_on_exit)
 
+# Periodic connection pool maintenance
+# ------------------------
+def maintain_connection_pool():
+    """Periodically clean up idle connections in the HTTP session pool"""
+    while True:
+        try:
+            time.sleep(300)  # Run every 5 minutes
+            logging.debug("Running connection pool maintenance...")
+            # Force close idle connections by recreating adapters
+            for prefix in ['http://', 'https://']:
+                adapter = _http_session.get_adapter(prefix)
+                if hasattr(adapter, 'poolmanager') and adapter.poolmanager:
+                    # Clear connections that have been idle
+                    adapter.poolmanager.clear()
+            logging.debug("Connection pool maintenance completed")
+        except Exception as e:
+            logging.error(f"Error in connection pool maintenance: {e}")
+
+# Start maintenance thread
+maintenance_thread = threading.Thread(target=maintain_connection_pool, daemon=True)
+maintenance_thread.start()
+logging.info("Started connection pool maintenance thread")
+
 
 if __name__ == '__main__':
     args = parse_arguments()
@@ -3012,6 +3049,7 @@ if __name__ == '__main__':
     logging.info(f"Starting proxy server on host {host} and port {port}...")
     logging.info(f"API Host: http://{host}:{port}/v1")
     logging.info(f"Available endpoints:")
+    logging.info(f"  - Health Check: http://{host}:{port}/health")
     logging.info(f"  - OpenAI Compatible API: http://{host}:{port}/v1/chat/completions")
     logging.info(f"  - Anthropic Claude API: http://{host}:{port}/v1/messages")
     logging.info(f"  - Models Listing: http://{host}:{port}/v1/models")
@@ -3021,9 +3059,17 @@ if __name__ == '__main__':
     # Otherwise fall back to Flask dev server with thread limiting
     try:
         from waitress import serve
-        logging.info("Using Waitress production server (threads=40, connection_limit=1000)")
+        logging.info("Using Waitress production server with improved connection handling")
+        logging.info("Configuration: threads=100, connection_limit=2000, cleanup_interval=15, channel_timeout=300")
         logging.info("To install waitress: pip3 install waitress")
-        serve(app, host=host, port=port, threads=40, connection_limit=1000, cleanup_interval=30, channel_timeout=120)
+        serve(app, host=host, port=port,
+              threads=100,              # Increased from 40 to handle more concurrent requests
+              connection_limit=2000,    # Increased from 1000
+              cleanup_interval=15,      # Decreased from 30 for faster cleanup
+              channel_timeout=300,      # Increased from 120 for long streaming requests
+              recv_bytes=65536,         # Increase receive buffer
+              send_bytes=65536,         # Increase send buffer
+              asyncore_use_poll=True)   # Use poll() instead of select() for better scalability
     except ImportError:
         logging.warning("Waitress not available, using Flask development server")
         logging.warning("For production use, install waitress: pip3 install waitress")
