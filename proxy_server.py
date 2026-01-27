@@ -2129,10 +2129,14 @@ def proxy_claude_request():
         return proxy_claude_request_original()
 
     logging.info(f"Request from Claude API for model: {model}")
-    
+
     # Extract streaming flag
     stream = request_json.get("stream", False)
-    
+
+    # Track request timing for logging
+    start_time = time.time()
+    request_id = f"{int(start_time * 1000)}-{random.randint(1000, 9999)}"
+
     try:
         # Use cached SAP AI SDK client for the model
         logging.info(f"Obtaining SAP AI SDK client for model: {model}")
@@ -2261,17 +2265,36 @@ def proxy_claude_request():
         if stream:
             # Handle streaming response
             def stream_generate():
+                prompt_tokens = 0
+                completion_tokens = 0
+                total_tokens = 0
+
                 try:
                     response = bedrock.invoke_model_with_response_stream(body=body_json)
                     response_body = response.get("body")
-                    
+
                     if response_body is not None:
                         for event in response_body:
                             chunk = json.loads(event["chunk"]["bytes"])
                             logging.debug(f"Streaming chunk: {chunk}")
-                            
+
                             chunk_type = chunk.get("type")
-                            
+
+                            # Extract token usage from message_delta chunks
+                            if chunk_type == "message_delta":
+                                usage = chunk.get("usage", {})
+                                if usage:
+                                    completion_tokens = usage.get("output_tokens", completion_tokens)
+
+                            # Extract token usage from message_start chunks
+                            elif chunk_type == "message_start":
+                                message = chunk.get("message", {})
+                                usage = message.get("usage", {})
+                                if usage:
+                                    prompt_tokens = usage.get("input_tokens", 0)
+                                    completion_tokens = usage.get("output_tokens", 0)
+                                    total_tokens = prompt_tokens + completion_tokens
+
                             # Handle different chunk types according to Claude streaming format
                             if chunk_type == "message_start":
                                 yield f"event: message_start\ndata: {json.dumps(chunk, ensure_ascii=False)}\n\n"
@@ -2287,7 +2310,27 @@ def proxy_claude_request():
                                 yield f"event: message_stop\ndata: {json.dumps(chunk, ensure_ascii=False)}\n\n"
                                 yield "data: [DONE]\n\n"
                                 break
-                                
+
+                    # Calculate final total if not set
+                    if total_tokens == 0:
+                        total_tokens = prompt_tokens + completion_tokens
+
+                    # Calculate request duration
+                    duration_ms = int((time.time() - start_time) * 1000)
+
+                    # Log token usage at the end of stream
+                    log_token_usage(
+                        request=request,
+                        model=model,
+                        subaccount_name=subaccount_name,
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=completion_tokens,
+                        total_tokens=total_tokens,
+                        is_streaming=True,
+                        duration_ms=duration_ms,
+                        request_id=request_id
+                    )
+
                 except Exception as e:
                     logging.error(f"Error in streaming response: {e}", exc_info=True)
                     error_chunk = {
@@ -2315,6 +2358,29 @@ def proxy_claude_request():
                 if chunk_data:
                     final_response = json.loads(chunk_data)
                     logging.debug(f"Non-streaming response: {final_response}")
+
+                    # Extract token usage
+                    usage = final_response.get("usage", {})
+                    prompt_tokens = usage.get("input_tokens", 0)
+                    completion_tokens = usage.get("output_tokens", 0)
+                    total_tokens = prompt_tokens + completion_tokens
+
+                    # Calculate request duration
+                    duration_ms = int((time.time() - start_time) * 1000)
+
+                    # Log token usage
+                    log_token_usage(
+                        request=request,
+                        model=model,
+                        subaccount_name=subaccount_name,
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=completion_tokens,
+                        total_tokens=total_tokens,
+                        is_streaming=False,
+                        duration_ms=duration_ms,
+                        request_id=request_id
+                    )
+
                     return jsonify(final_response), 200
                 else:
                     return jsonify({}), 200
