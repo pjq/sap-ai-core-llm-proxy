@@ -24,7 +24,7 @@ def parse_json_log(line):
         return None
 
 def parse_legacy_log(line):
-    """Parse legacy format log line."""
+    """Parse plain text format log line."""
     import re
 
     data = {}
@@ -42,14 +42,15 @@ def parse_legacy_log(line):
         'subaccount': r'SubAccount: ([^,]+)',
         'prompt': r'PromptTokens: (\d+)',
         'completion': r'CompletionTokens: (\d+)',
-        'total': r'TotalTokens: (\d+)'
+        'total': r'TotalTokens: (\d+)',
+        'duration': r'Duration: (\d+)ms'
     }
 
     for key, pattern in patterns.items():
         match = re.search(pattern, line)
         if match:
             value = match.group(1).strip()
-            if key in ['prompt', 'completion', 'total']:
+            if key in ['prompt', 'completion', 'total', 'duration']:
                 data[key] = int(value)
             else:
                 data[key] = value
@@ -95,8 +96,8 @@ def analyze_logs(log_file, start_date=None, end_date=None, model_filter=None, su
             if subaccount_filter and entry.get('subaccount') != subaccount_filter:
                 continue
 
-            # Extract data (handle both formats)
-            if 'tokens' in entry:  # New JSON format
+            # Extract data (handle both JSON and plain text formats)
+            if 'tokens' in entry:  # JSON format (if used)
                 model = entry.get('model', 'unknown')
                 subaccount = entry.get('subaccount', 'unknown')
                 user = entry.get('user', 'unknown')
@@ -107,7 +108,7 @@ def analyze_logs(log_file, start_date=None, end_date=None, model_filter=None, su
                 duration_ms = entry.get('duration_ms', 0)
                 status = entry.get('status', 'success')
                 timestamp = entry.get('timestamp', '')
-            else:  # Legacy format
+            else:  # Plain text format
                 model = entry.get('model', 'unknown')
                 subaccount = entry.get('subaccount', 'unknown')
                 user = entry.get('user', 'unknown')
@@ -115,7 +116,7 @@ def analyze_logs(log_file, start_date=None, end_date=None, model_filter=None, su
                 prompt_tokens = entry.get('prompt', 0)
                 completion_tokens = entry.get('completion', 0)
                 is_streaming = entry.get('streaming', False)
-                duration_ms = 0
+                duration_ms = entry.get('duration', 0)  # Duration field in plain text
                 status = 'success'
                 timestamp = entry.get('timestamp', '')
 
