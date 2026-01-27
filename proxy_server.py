@@ -281,11 +281,11 @@ token_logger.addHandler(file_handler)
 # Prevent token_logger from propagating to root logger (avoid duplicate logs)
 token_logger.propagate = False
 
-# Helper function to log token usage in structured format
+# Helper function to log token usage in original plain text format
 def log_token_usage(request, model, subaccount_name, prompt_tokens, completion_tokens,
                     total_tokens, is_streaming=False, duration_ms=None, request_id=None,
                     error=None):
-    """Log token usage with structured information for easy analysis.
+    """Log token usage in plain text format (original format).
 
     Args:
         request: Flask request object
@@ -296,47 +296,45 @@ def log_token_usage(request, model, subaccount_name, prompt_tokens, completion_t
         total_tokens: Total tokens used
         is_streaming: Whether this was a streaming request
         duration_ms: Request duration in milliseconds
-        request_id: Unique request identifier
+        request_id: Unique request identifier (not logged, kept for compatibility)
         error: Error message if request failed
     """
     # Extract user/auth info
     auth_header = request.headers.get("Authorization", "unknown")
     # Truncate long tokens but keep identifiable prefix
-    if auth_header and len(auth_header) > 25:
-        user_id = f"{auth_header[:25]}..."
+    if auth_header and len(auth_header) > 20:
+        user_id = f"{auth_header[:20]}..."
     else:
         user_id = auth_header
 
     # Get IP address
     ip_address = request.remote_addr or request.headers.get("X-Forwarded-For", "unknown")
 
-    # Generate request ID if not provided
-    if not request_id:
-        request_id = f"{int(time.time() * 1000)}-{random.randint(1000, 9999)}"
+    # Build log message in original format with optional enhancements
+    log_parts = [
+        f"User: {user_id}",
+        f"IP: {ip_address}",
+        f"Model: {model}",
+        f"SubAccount: {subaccount_name}",
+        f"PromptTokens: {prompt_tokens}",
+        f"CompletionTokens: {completion_tokens}",
+        f"TotalTokens: {total_tokens}"
+    ]
 
-    # Build structured log entry as JSON for easy parsing
-    log_entry = {
-        "timestamp": datetime.now().isoformat(),
-        "request_id": request_id,
-        "user": user_id,
-        "ip": ip_address,
-        "model": model,
-        "subaccount": subaccount_name,
-        "tokens": {
-            "prompt": prompt_tokens,
-            "completion": completion_tokens,
-            "total": total_tokens
-        },
-        "streaming": is_streaming,
-        "duration_ms": duration_ms,
-        "status": "error" if error else "success"
-    }
+    # Add optional duration
+    if duration_ms is not None:
+        log_parts.append(f"Duration: {duration_ms}ms")
 
+    # Add streaming indicator
+    if is_streaming:
+        log_parts.append("(Streaming)")
+
+    # Add error if present
     if error:
-        log_entry["error"] = str(error)
+        log_parts.append(f"Error: {error}")
 
-    # Log as JSON for easy parsing
-    token_logger.info(json.dumps(log_entry))
+    # Log in original comma-separated format
+    token_logger.info(", ".join(log_parts))
 
 # Global variables for token management
 token = None
@@ -2546,6 +2544,8 @@ def generate_streaming_response(url, headers, payload, model, subaccount_name):
 
     buffer = ""
     total_tokens = 0
+    prompt_tokens = 0  # Initialize prompt tokens
+    completion_tokens = 0  # Initialize completion tokens
     claude_metadata = {}  # For Claude 3.7 metadata
     chunk = None  # Initialize chunk variable to avoid reference errors
 
@@ -2713,13 +2713,13 @@ def generate_streaming_response(url, headers, payload, model, subaccount_name):
             # Calculate request duration
             duration_ms = int((time.time() - start_time) * 1000)
 
-            # Log token usage at the end of the stream with structured format
+            # Log token usage at the end of the stream
             log_token_usage(
                 request=request,
                 model=model,
                 subaccount_name=subaccount_name,
-                prompt_tokens=prompt_tokens if 'prompt_tokens' in locals() else 0,
-                completion_tokens=completion_tokens if 'completion_tokens' in locals() else 0,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
                 total_tokens=total_tokens,
                 is_streaming=True,
                 duration_ms=duration_ms,
