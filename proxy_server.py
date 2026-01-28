@@ -2250,7 +2250,13 @@ def proxy_claude_request():
             )
         else:
             logging.info("No max_tokens specified after adjustment for model %s", model)
-        
+
+        # Remove output_config which is not supported by AWS Bedrock
+        if "output_config" in body:
+            output_config = body.pop("output_config")
+            logging.info(f"[{request_id}] Removed unsupported output_config field from request: {json.dumps(output_config)}")
+            logging.info(f"[{request_id}] Note: AWS Bedrock doesn't support output_config/json_schema format constraints")
+
         # Convert body to JSON string for Bedrock API
         body_json = json.dumps(body)
         
