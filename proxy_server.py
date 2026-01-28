@@ -282,33 +282,29 @@ token_logger.addHandler(file_handler)
 token_logger.propagate = False
 
 # Helper function to log token usage in plain text format
-def log_token_usage(request, model, subaccount_name, prompt_tokens, completion_tokens,
-                    total_tokens, is_streaming=False, duration_ms=None, request_id=None,
-                    error=None):
+def log_token_usage(model, subaccount_name, prompt_tokens, completion_tokens,
+                    total_tokens, user_id=None, ip_address=None, is_streaming=False,
+                    duration_ms=None, request_id=None, error=None):
     """Log token usage in plain text format.
 
     Args:
-        request: Flask request object
         model: Model name used
         subaccount_name: SubAccount that handled the request
         prompt_tokens: Number of prompt tokens
         completion_tokens: Number of completion tokens
         total_tokens: Total tokens used
+        user_id: User/auth token (already truncated)
+        ip_address: Client IP address
         is_streaming: Whether this was a streaming request
         duration_ms: Request duration in milliseconds
         request_id: Unique request identifier (not logged, kept for compatibility)
         error: Error message if request failed
     """
-    # Extract user/auth info
-    auth_header = request.headers.get("Authorization", "unknown")
-    # Truncate long tokens but keep identifiable prefix
-    if auth_header and len(auth_header) > 20:
-        user_id = f"{auth_header[:20]}..."
-    else:
-        user_id = auth_header
-
-    # Get IP address
-    ip_address = request.remote_addr or request.headers.get("X-Forwarded-For", "unknown")
+    # Use provided user_id and ip_address, or defaults
+    if user_id is None:
+        user_id = "unknown"
+    if ip_address is None:
+        ip_address = "unknown"
 
     # Build log message in original format with optional enhancements
     log_parts = [
@@ -2269,6 +2265,11 @@ def proxy_claude_request():
         logging.info("Request body for Bedrock (pretty):\n%s", pretty_body_json)
 
         if stream:
+            # Extract user info for logging (before generator context)
+            auth_header = request.headers.get("Authorization", "unknown")
+            user_id = f"{auth_header[:20]}..." if auth_header and len(auth_header) > 20 else auth_header
+            ip_address = request.remote_addr or request.headers.get("X-Forwarded-For", "unknown")
+
             # Handle streaming response
             def stream_generate():
                 prompt_tokens = 0
@@ -2328,12 +2329,13 @@ def proxy_claude_request():
 
                     # Log token usage at the end of stream
                     log_token_usage(
-                        request=request,
                         model=model,
                         subaccount_name=subaccount_name,
                         prompt_tokens=prompt_tokens,
                         completion_tokens=completion_tokens,
                         total_tokens=total_tokens,
+                        user_id=user_id,
+                        ip_address=ip_address,
                         is_streaming=True,
                         duration_ms=duration_ms,
                         request_id=request_id
@@ -2377,14 +2379,20 @@ def proxy_claude_request():
                     # Calculate request duration
                     duration_ms = int((time.time() - start_time) * 1000)
 
+                    # Extract user info for logging
+                    auth_header = request.headers.get("Authorization", "unknown")
+                    user_id = f"{auth_header[:20]}..." if auth_header and len(auth_header) > 20 else auth_header
+                    ip_address = request.remote_addr or request.headers.get("X-Forwarded-For", "unknown")
+
                     # Log token usage
                     log_token_usage(
-                        request=request,
                         model=model,
                         subaccount_name=subaccount_name,
                         prompt_tokens=prompt_tokens,
                         completion_tokens=completion_tokens,
                         total_tokens=total_tokens,
+                        user_id=user_id,
+                        ip_address=ip_address,
                         is_streaming=False,
                         duration_ms=duration_ms,
                         request_id=request_id
@@ -2557,14 +2565,20 @@ def handle_non_streaming_request(url, headers, payload, model, subaccount_name):
         # Calculate request duration
         duration_ms = int((time.time() - start_time) * 1000)
 
+        # Extract user info for logging
+        auth_header = request.headers.get("Authorization", "unknown")
+        user_id = f"{auth_header[:20]}..." if auth_header and len(auth_header) > 20 else auth_header
+        ip_address = request.remote_addr or request.headers.get("X-Forwarded-For", "unknown")
+
         # Log token usage with structured format
         log_token_usage(
-            request=request,
             model=model,
             subaccount_name=subaccount_name,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             total_tokens=total_tokens,
+            user_id=user_id,
+            ip_address=ip_address,
             is_streaming=False,
             duration_ms=duration_ms,
             request_id=request_id
@@ -2612,6 +2626,11 @@ def generate_streaming_response(url, headers, payload, model, subaccount_name):
     # Track request timing
     start_time = time.time()
     request_id = f"{int(start_time * 1000)}-{random.randint(1000, 9999)}"
+
+    # Extract user info for logging (before generator context)
+    auth_header = request.headers.get("Authorization", "unknown")
+    user_id = f"{auth_header[:20]}..." if auth_header and len(auth_header) > 20 else auth_header
+    ip_address = request.remote_addr or request.headers.get("X-Forwarded-For", "unknown")
 
     # Log the raw request body and payload being forwarded
     logging.info(f"[{request_id}] Raw request received (streaming): {json.dumps(request.json, indent=2)}")
@@ -2790,12 +2809,13 @@ def generate_streaming_response(url, headers, payload, model, subaccount_name):
 
             # Log token usage at the end of the stream
             log_token_usage(
-                request=request,
                 model=model,
                 subaccount_name=subaccount_name,
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
                 total_tokens=total_tokens,
+                user_id=user_id,
+                ip_address=ip_address,
                 is_streaming=True,
                 duration_ms=duration_ms,
                 request_id=request_id
