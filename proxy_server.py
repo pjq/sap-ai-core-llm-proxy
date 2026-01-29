@@ -239,21 +239,28 @@ def handle_embedding_service_call(input_text, model, encoding_format):
 
 def format_embedding_response(response, model):
     # Logic to convert the response to OpenAI format
-    embedding_data = response.get("embedding", [])
+    # Process all embeddings in the response data list
+    data_list = []
+    total_embedding_length = 0
+
+    for item in response.get("data", []):
+        embedding_data = item.get("embedding", [])
+        index = item.get("index", len(data_list))
+
+        data_list.append(
+            {"object": "embedding", "embedding": embedding_data, "index": index}
+        )
+
+        total_embedding_length += len(embedding_data)
+
     return {
         "object": "list",
-        "data": [
-            {
-                "object": "embedding",
-                "embedding": embedding_data,
-                "index": 0
-            }
-        ],
+        "data": data_list,
         "model": model,
         "usage": {
-            "prompt_tokens": len(embedding_data),
-            "total_tokens": len(embedding_data)
-        }
+            "prompt_tokens": total_embedding_length,
+            "total_tokens": total_embedding_length,
+        },
     }
 
 # Configure logging
