@@ -2075,8 +2075,8 @@ def proxy_claude_request():
         available_models = list(proxy_config.model_to_subaccounts.keys())
 
         # First, try to find models with both "claude" and "sonnet"
-        # Prefer newer versions: 4.5 > 4 > 3.7 > 3.5
-        priority_versions = ["4.5", "4-", "3.7", "3.5", "3-"]
+        # Prefer newer versions: 4.6 > 4.5 > 4 > 3.7 > 3.5
+        priority_versions = ["4.6", "4.5", "4-", "3.7", "3.5", "3-"]
         for version in priority_versions:
             for model_name in available_models:
                 model_lower = model_name.lower()
