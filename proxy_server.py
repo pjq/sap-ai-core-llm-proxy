@@ -804,9 +804,9 @@ def convert_claude_request_for_bedrock(payload):
 
 
 def convert_claude_to_openai(response, model):
-    # Check if the model is Claude 3.7 or 4
+    # Check if the model is Claude 3.7, 4, 4.5, or 4.6
     if is_claude_37_or_4(model):
-        logging.info(f"Detected Claude 3.7/4 model ('{model}'), using convert_claude37_to_openai.")
+        logging.info(f"Detected Claude model ('{model}'), using convert_claude37_to_openai.")
         return convert_claude37_to_openai(response, model)
 
     # Proceed with the original Claude conversion logic for other models
@@ -856,11 +856,11 @@ def convert_claude_to_openai(response, model):
 
 def convert_claude37_to_openai(response, model_name="claude-3.7"):
     """
-    Converts a Claude 3.7/4 /converse API response payload (non-streaming)
+    Converts a Claude 3.7/4/4.5/4.6 /converse API response payload (non-streaming)
     to the format expected by the OpenAI Chat Completion API.
     """
     try:
-        logging.debug(f"Raw response from Claude 3.7/4 API: {json.dumps(response, indent=2)}")
+        logging.debug(f"Raw response from Claude API: {json.dumps(response, indent=2)}")
 
         # Validate the overall response structure
         if not isinstance(response, dict):
@@ -918,7 +918,7 @@ def convert_claude37_to_openai(response, model_name="claude-3.7"):
 
         input_tokens = usage.get("inputTokens", 0)
         output_tokens = usage.get("outputTokens", 0)
-        # Claude 3.7/4 /converse should provide totalTokens, but calculate as fallback
+        # Claude /converse should provide totalTokens, but calculate as fallback
         total_tokens = usage.get("totalTokens", input_tokens + output_tokens)
 
 
@@ -1023,7 +1023,7 @@ def convert_claude_chunk_to_openai(chunk, model):
 
 def convert_claude37_chunk_to_openai(claude_chunk, model_name):
     """
-    Converts a single parsed Claude 3.7/4 /converse-stream chunk (dictionary)
+    Converts a single parsed Claude 3.7/4/4.5/4.6 /converse-stream chunk (dictionary)
     into an OpenAI-compatible Server-Sent Event (SSE) string.
     Returns None if the chunk doesn't map to an OpenAI event (e.g., metadata).
     """
@@ -2655,9 +2655,9 @@ def generate_streaming_response(url, headers, payload, model, subaccount_name):
         try:
             response.raise_for_status()
             
-            # --- Claude 3.7/4 Streaming Logic ---
+            # --- Claude 3.7/4/4.5/4.6 Streaming Logic ---
             if is_claude_model(model) and is_claude_37_or_4(model):
-                logging.info(f"Using Claude 3.7/4 streaming for subAccount '{subaccount_name}'")
+                logging.info(f"Using Claude streaming (model: {model}) for subAccount '{subaccount_name}'")
                 for line_bytes in response.iter_lines():
                     if line_bytes:
                         line = line_bytes.decode('utf-8')
