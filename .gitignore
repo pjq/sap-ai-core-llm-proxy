@@ -235,3 +235,5 @@ config.json
 key.pem
 cert.pem
 *.json
+config.json.bak
+config.json.bak2
