@@ -2200,6 +2200,35 @@ def proxy_claude_request():
         tools_list = body.get("tools")
         removed_count = 0
         if isinstance(tools_list, list):
+            # Bedrock only supports standard function tools (no "type" key, or type="custom").
+            # Strip Anthropic-native tool types that Bedrock doesn't recognise
+            # (e.g. "web_search_20250305", "computer_20241022", etc.).
+            BEDROCK_UNSUPPORTED_TOOL_TYPES = {
+                "web_search_20250305",
+                "computer_20241022",
+                "text_editor_20241022",
+                "bash_20241022",
+            }
+            original_tool_count = len(tools_list)
+            tools_list = [
+                tool for tool in tools_list
+                if not (isinstance(tool, dict) and tool.get("type") in BEDROCK_UNSUPPORTED_TOOL_TYPES)
+            ]
+            stripped_tool_count = original_tool_count - len(tools_list)
+            if stripped_tool_count:
+                logging.info(
+                    "[%s] Stripped %d Bedrock-unsupported tool(s) from request (e.g. web_search, computer use)",
+                    request_id, stripped_tool_count,
+                )
+            if tools_list:
+                body["tools"] = tools_list
+            else:
+                # No tools remain — remove the key entirely to avoid an empty list validation error
+                body.pop("tools", None)
+                if "tool_choice" in body:
+                    body.pop("tool_choice", None)
+                    logging.info("[%s] Removed 'tool_choice' because all tools were stripped", request_id)
+
             for idx, tool in enumerate(tools_list):
                 if isinstance(tool, dict):
                     # Remove top-level input_examples
