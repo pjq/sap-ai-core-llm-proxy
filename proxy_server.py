@@ -786,11 +786,14 @@ def convert_claude_request_for_bedrock(payload):
             
             cleaned_messages.append(cleaned_message)
         bedrock_payload["messages"] = cleaned_messages
+
+    sanitize_bedrock_tool_result_content(bedrock_payload, request_id="convert_claude_request_for_bedrock")
     
     # Handle tools conversion if present
     if "tools" in payload and payload["tools"]:
         bedrock_payload["tools"] = payload["tools"]
-        logging.debug(f"Tools present in request: {len(payload['tools'])} tools")
+        sanitize_bedrock_tools(bedrock_payload, request_id="convert_claude_request_for_bedrock")
+        logging.debug(f"Tools present in request: {len(bedrock_payload.get('tools', []))} tools")
     
     # Handle anthropic_beta if present (but not in payload, should be in headers)
     # Remove it from payload as it should be in headers only
@@ -801,6 +804,153 @@ def convert_claude_request_for_bedrock(payload):
     
     logging.debug(f"Converted Bedrock Claude payload: {json.dumps(bedrock_payload, indent=2)}")
     return bedrock_payload
+
+
+def sanitize_bedrock_tools(body: Dict[str, Any], request_id: str = "unknown") -> Dict[str, int]:
+    tools_list = body.get("tools")
+    removed_fields = 0
+    stripped_tools = 0
+
+    if not isinstance(tools_list, list):
+        return {"removed_fields": 0, "stripped_tools": 0}
+
+    BEDROCK_UNSUPPORTED_TOOL_TYPES = {
+        "web_search_20250305",
+        "computer_20241022",
+        "text_editor_20241022",
+        "bash_20241022",
+    }
+
+    original_tool_count = len(tools_list)
+    sanitized_tools: List[Dict[str, Any]] = []
+
+    for tool in tools_list:
+        if not isinstance(tool, dict):
+            stripped_tools += 1
+            continue
+
+        if tool.get("type") in BEDROCK_UNSUPPORTED_TOOL_TYPES:
+            stripped_tools += 1
+            continue
+
+        name = tool.get("name")
+        input_schema = tool.get("input_schema")
+        description = tool.get("description")
+
+        if not isinstance(name, str) or not name:
+            stripped_tools += 1
+            continue
+        if not isinstance(input_schema, dict):
+            stripped_tools += 1
+            continue
+        if not isinstance(description, str):
+            description = ""
+
+        sanitized_tool = {"name": name, "description": description, "input_schema": input_schema}
+        removed_fields += max(0, len(tool) - len(sanitized_tool))
+        sanitized_tools.append(sanitized_tool)
+
+    if stripped_tools:
+        logging.info(
+            "[%s] Stripped %d tool(s) from request for Bedrock compatibility",
+            request_id,
+            stripped_tools,
+        )
+
+    if sanitized_tools:
+        body["tools"] = sanitized_tools
+    else:
+        body.pop("tools", None)
+        if "tool_choice" in body:
+            body.pop("tool_choice", None)
+            logging.info("[%s] Removed 'tool_choice' because all tools were stripped", request_id)
+        return {"removed_fields": removed_fields, "stripped_tools": original_tool_count}
+
+    if removed_fields:
+        logging.info("[%s] Removed %d unsupported tool field(s) for Bedrock", request_id, removed_fields)
+
+    return {"removed_fields": removed_fields, "stripped_tools": stripped_tools}
+
+
+def sanitize_bedrock_tool_result_content(body: Dict[str, Any], request_id: str = "unknown") -> Dict[str, int]:
+    messages = body.get("messages")
+    if not isinstance(messages, list):
+        return {"converted_blocks": 0, "normalized_tool_results": 0}
+
+    allowed_content_types = {"text", "image", "document", "search_result"}
+    converted_blocks = 0
+    normalized_tool_results = 0
+
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        content_list = message.get("content")
+        if not isinstance(content_list, list):
+            continue
+
+        for content_item in content_list:
+            if not isinstance(content_item, dict):
+                continue
+            if content_item.get("type") != "tool_result":
+                continue
+
+            tool_result_content = content_item.get("content")
+
+            if isinstance(tool_result_content, str):
+                content_item["content"] = [{"type": "text", "text": tool_result_content}]
+                normalized_tool_results += 1
+                continue
+
+            if isinstance(tool_result_content, list):
+                new_blocks: List[Any] = []
+                for block in tool_result_content:
+                    if isinstance(block, dict) and block.get("type") in allowed_content_types:
+                        new_blocks.append(block)
+                        continue
+
+                    if isinstance(block, dict) and block.get("type") == "tool_reference":
+                        tool_name = block.get("tool_name")
+                        suffix = f" tool_name={tool_name}" if isinstance(tool_name, str) else ""
+                        new_blocks.append(
+                            {
+                                "type": "text",
+                                "text": f"[tool_ref]{suffix}",
+                            }
+                        )
+                        converted_blocks += 1
+                        continue
+
+                    try:
+                        dumped = json.dumps(block, ensure_ascii=False)
+                    except Exception:
+                        dumped = str(block)
+                    new_blocks.append(
+                        {
+                            "type": "text",
+                            "text": f"[unsupported_tool_result_content] {dumped}",
+                        }
+                    )
+                    converted_blocks += 1
+
+                content_item["content"] = new_blocks
+                continue
+
+            try:
+                dumped = json.dumps(tool_result_content, ensure_ascii=False)
+            except Exception:
+                dumped = str(tool_result_content)
+            content_item["content"] = [{"type": "text", "text": dumped}]
+            normalized_tool_results += 1
+
+    if converted_blocks or normalized_tool_results:
+        logging.info(
+            "[%s] Sanitized tool_result content for Bedrock: converted_blocks=%d normalized_tool_results=%d",
+            request_id,
+            converted_blocks,
+            normalized_tool_results,
+        )
+
+    return {"converted_blocks": converted_blocks, "normalized_tool_results": normalized_tool_results}
 
 
 def convert_claude_to_openai(response, model):
@@ -2196,50 +2346,8 @@ def proxy_claude_request():
             logging.info("Removed unsupported field 'context_management' from request body")
         
 
-        # Remove unsupported fields inside tools for Bedrock
-        tools_list = body.get("tools")
-        removed_count = 0
-        if isinstance(tools_list, list):
-            # Bedrock only supports standard function tools (no "type" key, or type="custom").
-            # Strip Anthropic-native tool types that Bedrock doesn't recognise
-            # (e.g. "web_search_20250305", "computer_20241022", etc.).
-            BEDROCK_UNSUPPORTED_TOOL_TYPES = {
-                "web_search_20250305",
-                "computer_20241022",
-                "text_editor_20241022",
-                "bash_20241022",
-            }
-            original_tool_count = len(tools_list)
-            tools_list = [
-                tool for tool in tools_list
-                if not (isinstance(tool, dict) and tool.get("type") in BEDROCK_UNSUPPORTED_TOOL_TYPES)
-            ]
-            stripped_tool_count = original_tool_count - len(tools_list)
-            if stripped_tool_count:
-                logging.info(
-                    "[%s] Stripped %d Bedrock-unsupported tool(s) from request (e.g. web_search, computer use)",
-                    request_id, stripped_tool_count,
-                )
-            if tools_list:
-                body["tools"] = tools_list
-            else:
-                # No tools remain — remove the key entirely to avoid an empty list validation error
-                body.pop("tools", None)
-                if "tool_choice" in body:
-                    body.pop("tool_choice", None)
-                    logging.info("[%s] Removed 'tool_choice' because all tools were stripped", request_id)
-
-            for idx, tool in enumerate(tools_list):
-                if isinstance(tool, dict):
-                    # Remove top-level input_examples
-                    if "input_examples" in tool:
-                        tool.pop("input_examples", None)
-                        removed_count += 1
-                    # Remove nested custom.input_examples
-                    custom = tool.get("custom")
-                    if isinstance(custom, dict) and "input_examples" in custom:
-                        custom.pop("input_examples", None)
-                        removed_count += 1
+        sanitize_bedrock_tools(body, request_id=request_id)
+        sanitize_bedrock_tool_result_content(body, request_id=request_id)
 
         # Ensure max_tokens obeys thinking budget constraints
         thinking_cfg = body.get("thinking")
