@@ -3,6 +3,6 @@ flask
 # between sap-ai-sdk-gen (gen_ai_hub) and ai_core_sdk 2.6.2
 ai_core_sdk>=2.6.2
 openai
-litellm
+litellm==1.82.6
 sap-ai-sdk-gen[all]>=5.10.0
 aioboto3
