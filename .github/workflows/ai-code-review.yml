@@ -66,7 +66,6 @@ jobs:
         run: |
           echo "COMMENT_ID=${{ github.event.comment.id }}" >> $GITHUB_ENV
           echo "ISSUE_NUMBER=${{ github.event.issue.number }}" >> $GITHUB_ENV
-          echo "COMMENT_BODY=${{ github.event.comment.body }}" >> $GITHUB_ENV
 
       - name: Run AI Code Review
         id: ai-review
