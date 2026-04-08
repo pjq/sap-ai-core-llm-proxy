@@ -1314,6 +1314,30 @@ def is_gemini_model(model):
     """
     return any(keyword in model.lower() for keyword in ["gemini", "gemini-1.5", "gemini-2.5", "gemini-pro", "gemini-flash"])
 
+def is_llama_model(model):
+    """
+    Check if the model is a Meta Llama model.
+    
+    Args:
+        model: The model name to check
+        
+    Returns:
+        bool: True if the model is a Meta Llama model, False otherwise
+    """
+    return any(keyword in model.lower() for keyword in ["llama", "meta--llama"])
+
+def is_mistral_model(model):
+    """
+    Check if the model is a Mistral AI model.
+    
+    Args:
+        model: The model name to check
+        
+    Returns:
+        bool: True if the model is a Mistral model, False otherwise
+    """
+    return any(keyword in model.lower() for keyword in ["mistral", "mistralai--", "mixtral"])
+
 def convert_openai_to_gemini(payload):
     """
     Converts an OpenAI API request payload to the format expected by the
@@ -1998,7 +2022,11 @@ def handle_default_request(payload, model="gpt-4o"):
             raise ValueError(f"No valid model found for '{model}' or fallback in any subAccount")
 
     # Determine API version based on model
-    if any(m in model for m in ["o3", "o4-mini", "o3-mini"]):
+    if is_llama_model(model) or is_mistral_model(model):
+        api_version = None
+        modified_payload = payload.copy()
+        logging.info(f"Model '{model}' detected as Llama/Mistral - no api-version parameter")
+    elif any(m in model for m in ["o3", "o4-mini", "o3-mini"]):
         api_version = "2024-12-01-preview"
         # Remove unsupported parameters for o3-mini
         modified_payload = payload.copy()
@@ -2010,8 +2038,8 @@ def handle_default_request(payload, model="gpt-4o"):
         api_version = "2023-05-15"
         modified_payload = payload.copy()
 
-    # Remove reasoning-related parameters for GPT models
-    # These parameters are Claude-specific and not supported by OpenAI GPT models
+    # Remove reasoning-related parameters for non-Claude models
+    # These parameters are Claude-specific and not supported by OpenAI GPT or Llama models
     unsupported_params = ['reasoning', 'reasoning_effort']
     removed_params = []
     for param in unsupported_params:
@@ -2020,9 +2048,12 @@ def handle_default_request(payload, model="gpt-4o"):
             removed_params.append(param)
 
     if removed_params:
-        logging.info(f"Removed unsupported parameters for GPT model '{model}': {', '.join(removed_params)}")
+        logging.info(f"Removed unsupported parameters for model '{model}': {', '.join(removed_params)}")
 
-    endpoint_url = f"{selected_url.rstrip('/')}/chat/completions?api-version={api_version}"
+    if api_version:
+        endpoint_url = f"{selected_url.rstrip('/')}/chat/completions?api-version={api_version}"
+    else:
+        endpoint_url = f"{selected_url.rstrip('/')}/chat/completions"
 
     logging.info(f"handle_default_request: {endpoint_url} (subAccount: {subaccount_name})")
     return endpoint_url, modified_payload, subaccount_name
