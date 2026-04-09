@@ -2361,6 +2361,15 @@ def proxy_claude_request():
                 max_tokens_value = None
 
         if isinstance(thinking_cfg, dict):
+            # Normalize thinking.type: Bedrock only accepts "enabled" or "disabled"
+            thinking_type = thinking_cfg.get("type")
+            if thinking_type not in (None, "enabled", "disabled"):
+                logging.info(
+                    "Normalizing unsupported thinking.type '%s' to 'enabled'",
+                    thinking_type,
+                )
+                thinking_cfg["type"] = "enabled"
+
             budget_tokens = thinking_cfg.get("budget_tokens")
             if isinstance(budget_tokens, int):
                 required_min_tokens = budget_tokens + 1
