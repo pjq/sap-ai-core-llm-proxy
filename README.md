@@ -87,9 +87,13 @@ The proxy server now supports OpenAI-compatible embeddings API:
 `sap-ai-core-llm-proxy` is a Python-based project that includes functionalities for token management, forwarding requests to the SAP AI Core API, and handling responses. The project uses Flask to implement the proxy server.
 
 Now it supports the following LLM models
-- OpenAI: gpt-4o, gpt-4.1, gpt-5, gpt-o3-mini, gpt-o3, gpt-o4-mini
-- Claude: 3.5-sonnet, 3.7-sonnet, 4-sonnet, 4.5-sonnet
+- OpenAI: gpt-4o, gpt-4.1, gpt-5, gpt-5.4, gpt-5.3-codex, gpt-o3-mini, gpt-o3, gpt-o4-mini
+- Claude: 3.5-sonnet, 3.7-sonnet, 4-sonnet, 4.5-sonnet, 4.5-opus, 4.6-sonnet, 4.6-opus, 4.7-opus
 - Google Gemini: gemini-2.5-pro
+
+Default fallback models:
+- OpenAI endpoint: gpt-5.4
+- Anthropic endpoint: anthropic--claude-4.6-opus
 
 ## Features
 - **Token Management**: Fetch and cache tokens for authentication.
@@ -257,7 +261,7 @@ You need to set the enviroment variables before run the claude code.
 ```shell
 export ANTHROPIC_AUTH_TOKEN=your_secret_key
 export ANTHROPIC_BASE_URL=http://127.0.0.1:3001
-export ANTHROPIC_MODEL=anthropic--claude-4-sonnet
+export ANTHROPIC_MODEL=anthropic--claude-4.6-opus
 ```
 
 Then run the claude code

@@ -2118,12 +2118,12 @@ def proxy_openai_stream():
     model = payload.get("model")
     if not model:
         logging.warning("No model specified in request, using default model")
-        model = "gpt-4o"  # Default model
+        model = "gpt-5.4"  # Default model
     
     # Check if model is available in any subAccount
     if model not in proxy_config.model_to_subaccounts:
         logging.warning(f"Model '{model}' not found in any subAccount, falling back to default")
-        model = "gpt-4o"  # Fallback model
+        model = "gpt-5.4"  # Fallback model
         if model not in proxy_config.model_to_subaccounts:
             return jsonify({"error": f"Model '{model}' not available in any subAccount."}), 404
     
@@ -2224,26 +2224,35 @@ def proxy_claude_request():
         fallback_model = None
         available_models = list(proxy_config.model_to_subaccounts.keys())
 
-        # First, try to find models with both "claude" and "sonnet"
-        # Prefer newer versions: 4.6 > 4.5 > 4 > 3.7 > 3.5
-        priority_versions = ["4.6", "4.5", "4-", "3.7", "3.5", "3-"]
-        for version in priority_versions:
-            for model_name in available_models:
-                model_lower = model_name.lower()
-                if "claude" in model_lower and "sonnet" in model_lower and version in model_name:
-                    fallback_model = model_name
-                    logging.info(f"Found Claude Sonnet {version} model: {fallback_model}")
-                    break
-            if fallback_model:
-                break
+        # First, try the preferred default: claude 4.6 opus
+        if "anthropic--claude-4.6-opus" in available_models:
+            fallback_model = "anthropic--claude-4.6-opus"
+            logging.info(f"Using default Claude 4.6 Opus as fallback")
 
-        # If still no match, just find any claude+sonnet
+        # If not available, search by priority: opus > sonnet, newer > older
         if not fallback_model:
-            for model_name in available_models:
-                model_lower = model_name.lower()
-                if "claude" in model_lower and "sonnet" in model_lower:
-                    fallback_model = model_name
-                    logging.info(f"Found Claude Sonnet model: {fallback_model}")
+            priority_versions = ["4.7", "4.6", "4.5", "4-", "3.7", "3.5", "3-"]
+            for version in priority_versions:
+                for model_name in available_models:
+                    model_lower = model_name.lower()
+                    if "claude" in model_lower and "opus" in model_lower and version in model_name:
+                        fallback_model = model_name
+                        logging.info(f"Found Claude Opus {version} model: {fallback_model}")
+                        break
+                if fallback_model:
+                    break
+
+        # Then try sonnet models
+        if not fallback_model:
+            priority_versions = ["4.6", "4.5", "4-", "3.7", "3.5", "3-"]
+            for version in priority_versions:
+                for model_name in available_models:
+                    model_lower = model_name.lower()
+                    if "claude" in model_lower and "sonnet" in model_lower and version in model_name:
+                        fallback_model = model_name
+                        logging.info(f"Found Claude Sonnet {version} model: {fallback_model}")
+                        break
+                if fallback_model:
                     break
 
         # If no claude+sonnet found, try to find any model with "claude"
