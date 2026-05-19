@@ -9,6 +9,7 @@ import json
 import base64
 import random
 import os
+import uuid
 from datetime import datetime
 import argparse
 import re
@@ -2178,6 +2179,487 @@ def proxy_openai_stream():
     except Exception as err:
         logging.error(f"Unexpected error during request handling: {err}", exc_info=True)
         return jsonify({"error": str(err)}), 500
+
+
+# ============================================================
+# OpenAI Responses API (/v1/responses)
+# ============================================================
+
+def _gen_resp_id():
+    return f"resp_{uuid.uuid4().hex[:48]}"
+
+def _gen_msg_id():
+    return f"msg_{uuid.uuid4().hex[:48]}"
+
+def _gen_item_id():
+    return f"item_{uuid.uuid4().hex[:48]}"
+
+
+def convert_responses_input_to_messages(payload):
+    """Convert Responses API input format to chat/completions messages."""
+    messages = []
+
+    # Handle instructions → system message
+    instructions = payload.get("instructions")
+    if instructions:
+        messages.append({"role": "system", "content": instructions})
+
+    input_data = payload.get("input")
+    if input_data is None:
+        return messages
+
+    # Simple string input → single user message
+    if isinstance(input_data, str):
+        messages.append({"role": "user", "content": input_data})
+        return messages
+
+    # Array input - can be messages or content items
+    if isinstance(input_data, list):
+        for item in input_data:
+            if isinstance(item, str):
+                messages.append({"role": "user", "content": item})
+            elif isinstance(item, dict):
+                item_type = item.get("type")
+                role = item.get("role")
+
+                # Standard message format with role
+                if role:
+                    content = item.get("content", "")
+                    # Content can be string or array of content parts
+                    if isinstance(content, list):
+                        # Convert input_text/input_image parts to openai format
+                        converted_parts = []
+                        for part in content:
+                            part_type = part.get("type", "")
+                            if part_type == "input_text":
+                                converted_parts.append({"type": "text", "text": part.get("text", "")})
+                            elif part_type == "input_image":
+                                img_url = part.get("image_url") or part.get("url", "")
+                                converted_parts.append({"type": "image_url", "image_url": {"url": img_url}})
+                            elif part_type == "text":
+                                converted_parts.append({"type": "text", "text": part.get("text", "")})
+                            else:
+                                converted_parts.append(part)
+                        messages.append({"role": role, "content": converted_parts})
+                    else:
+                        messages.append({"role": role, "content": content})
+
+                # function_call_output → tool response
+                elif item_type == "function_call_output":
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": item.get("call_id", ""),
+                        "content": item.get("output", "")
+                    })
+
+                # Handle message type items
+                elif item_type == "message":
+                    role = item.get("role", "user")
+                    content = item.get("content", "")
+                    if isinstance(content, list):
+                        text_parts = []
+                        for part in content:
+                            if part.get("type") == "input_text":
+                                text_parts.append(part.get("text", ""))
+                            elif part.get("type") == "text":
+                                text_parts.append(part.get("text", ""))
+                            elif part.get("type") == "output_text":
+                                text_parts.append(part.get("text", ""))
+                        messages.append({"role": role, "content": "\n".join(text_parts) if text_parts else ""})
+                    else:
+                        messages.append({"role": role, "content": content})
+
+                # function_call item → assistant message with tool_calls
+                elif item_type == "function_call":
+                    messages.append({
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [{
+                            "id": item.get("id", item.get("call_id", "")),
+                            "type": "function",
+                            "function": {
+                                "name": item.get("name", ""),
+                                "arguments": item.get("arguments", "")
+                            }
+                        }]
+                    })
+
+    return messages
+
+
+def convert_responses_tools(tools):
+    """Convert Responses API tools to chat/completions tools format."""
+    if not tools:
+        return None
+    converted = []
+    for tool in tools:
+        tool_type = tool.get("type", "")
+        if tool_type == "function":
+            converted.append({
+                "type": "function",
+                "function": {
+                    "name": tool.get("name", ""),
+                    "description": tool.get("description", ""),
+                    "parameters": tool.get("parameters", {})
+                }
+            })
+    return converted if converted else None
+
+
+def build_responses_api_response(completion_response, model, resp_id):
+    """Convert a chat/completions response to Responses API format."""
+    created_at = int(time.time())
+    output = []
+
+    if "choices" in completion_response and completion_response["choices"]:
+        choice = completion_response["choices"][0]
+        message = choice.get("message", {})
+
+        # Handle tool calls
+        tool_calls = message.get("tool_calls", [])
+        if tool_calls:
+            for tc in tool_calls:
+                output.append({
+                    "id": tc.get("id", _gen_item_id()),
+                    "type": "function_call",
+                    "status": "completed",
+                    "name": tc["function"]["name"],
+                    "arguments": tc["function"]["arguments"],
+                    "call_id": tc.get("id", _gen_item_id())
+                })
+
+        # Handle text content
+        content = message.get("content")
+        if content:
+            output.append({
+                "id": _gen_msg_id(),
+                "type": "message",
+                "status": "completed",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": content, "annotations": []}]
+            })
+
+    usage_data = completion_response.get("usage", {})
+    usage = {
+        "input_tokens": usage_data.get("prompt_tokens", 0),
+        "output_tokens": usage_data.get("completion_tokens", 0),
+        "total_tokens": usage_data.get("total_tokens", 0)
+    }
+
+    return {
+        "id": resp_id,
+        "object": "response",
+        "created_at": created_at,
+        "status": "completed",
+        "model": model,
+        "output": output,
+        "usage": usage
+    }
+
+
+def generate_responses_streaming(endpoint_url, headers, chat_payload, model, subaccount_name):
+    """Stream chat/completions and convert to Responses API SSE events."""
+    resp_id = _gen_resp_id()
+    msg_id = _gen_msg_id()
+    created_at = int(time.time())
+    sequence_number = 0
+
+    # Build the base response object
+    base_response = {
+        "id": resp_id,
+        "object": "response",
+        "created_at": created_at,
+        "status": "in_progress",
+        "model": model,
+        "output": [],
+        "usage": None
+    }
+
+    def emit_event(event_type, data):
+        nonlocal sequence_number
+        if isinstance(data, dict):
+            data["sequence_number"] = sequence_number
+        sequence_number += 1
+        return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+
+    # Emit initial lifecycle events
+    yield emit_event("response.created", base_response.copy())
+    yield emit_event("response.in_progress", base_response.copy())
+
+    # Emit output_item.added for the message
+    message_item = {
+        "id": msg_id,
+        "type": "message",
+        "status": "in_progress",
+        "role": "assistant",
+        "content": []
+    }
+    yield emit_event("response.output_item.added", {
+        "type": "response.output_item.added",
+        "output_index": 0,
+        "item": message_item
+    })
+
+    # Emit content_part.added
+    yield emit_event("response.content_part.added", {
+        "type": "response.content_part.added",
+        "item_id": msg_id,
+        "output_index": 0,
+        "content_index": 0,
+        "part": {"type": "output_text", "text": "", "annotations": []}
+    })
+
+    # Now stream from backend
+    full_text = ""
+    function_calls = {}  # id -> {name, arguments}
+    input_tokens = 0
+    output_tokens = 0
+
+    try:
+        chat_payload["stream"] = True
+        response = _http_session.post(
+            endpoint_url, headers=headers, json=chat_payload,
+            stream=True, timeout=300
+        )
+        response.raise_for_status()
+
+        for line in response.iter_lines(decode_unicode=True):
+            if not line:
+                continue
+            if line.startswith("data: "):
+                data_str = line[6:]
+                if data_str.strip() == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(data_str)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+
+                choices = chunk.get("choices", [])
+                if not choices:
+                    continue
+                delta = choices[0].get("delta", {})
+
+                # Handle text content deltas
+                content = delta.get("content")
+                if content:
+                    full_text += content
+                    yield emit_event("response.output_text.delta", {
+                        "type": "response.output_text.delta",
+                        "item_id": msg_id,
+                        "output_index": 0,
+                        "content_index": 0,
+                        "delta": content
+                    })
+
+                # Handle tool call deltas
+                tool_calls = delta.get("tool_calls", [])
+                for tc in tool_calls:
+                    tc_index = tc.get("index", 0)
+                    tc_id = tc.get("id")
+                    func = tc.get("function", {})
+
+                    if tc_id:
+                        function_calls[tc_index] = {
+                            "id": tc_id,
+                            "name": func.get("name", ""),
+                            "arguments": ""
+                        }
+
+                    if tc_index in function_calls:
+                        arg_delta = func.get("arguments", "")
+                        if arg_delta:
+                            function_calls[tc_index]["arguments"] += arg_delta
+                            yield emit_event("response.function_call_arguments.delta", {
+                                "type": "response.function_call_arguments.delta",
+                                "item_id": function_calls[tc_index]["id"],
+                                "output_index": 0,
+                                "delta": arg_delta
+                            })
+
+                # Extract usage if present
+                usage = chunk.get("usage")
+                if usage:
+                    input_tokens = usage.get("prompt_tokens", input_tokens)
+                    output_tokens = usage.get("completion_tokens", output_tokens)
+
+        response.close()
+
+    except Exception as e:
+        logging.error(f"Error streaming responses API: {e}", exc_info=True)
+        yield emit_event("error", {
+            "type": "error",
+            "message": str(e)
+        })
+        return
+
+    # Emit done events for text content
+    if full_text:
+        yield emit_event("response.output_text.done", {
+            "type": "response.output_text.done",
+            "item_id": msg_id,
+            "output_index": 0,
+            "content_index": 0,
+            "text": full_text
+        })
+
+        yield emit_event("response.content_part.done", {
+            "type": "response.content_part.done",
+            "item_id": msg_id,
+            "output_index": 0,
+            "content_index": 0,
+            "part": {"type": "output_text", "text": full_text, "annotations": []}
+        })
+
+        message_item["content"] = [{"type": "output_text", "text": full_text, "annotations": []}]
+        message_item["status"] = "completed"
+        yield emit_event("response.output_item.done", {
+            "type": "response.output_item.done",
+            "output_index": 0,
+            "item": message_item
+        })
+
+    # Emit done events for function calls
+    output_items = []
+    if full_text:
+        output_items.append(message_item)
+
+    for tc_index in sorted(function_calls.keys()):
+        tc = function_calls[tc_index]
+        fc_item = {
+            "id": tc["id"],
+            "type": "function_call",
+            "status": "completed",
+            "name": tc["name"],
+            "arguments": tc["arguments"],
+            "call_id": tc["id"]
+        }
+        output_items.append(fc_item)
+
+        yield emit_event("response.function_call_arguments.done", {
+            "type": "response.function_call_arguments.done",
+            "item_id": tc["id"],
+            "output_index": len(output_items) - 1,
+            "arguments": tc["arguments"]
+        })
+
+        yield emit_event("response.output_item.done", {
+            "type": "response.output_item.done",
+            "output_index": len(output_items) - 1,
+            "item": fc_item
+        })
+
+    # Emit response.completed
+    completed_response = {
+        "id": resp_id,
+        "object": "response",
+        "created_at": created_at,
+        "status": "completed",
+        "model": model,
+        "output": output_items,
+        "usage": {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens
+        }
+    }
+    yield emit_event("response.completed", completed_response)
+
+
+@app.route('/v1/responses', methods=['POST'])
+def proxy_responses_request():
+    """Handler for OpenAI Responses API endpoint."""
+    logging.info("Received request to /v1/responses")
+    logging.debug(f"Request headers: {request.headers}")
+    logging.debug(f"Request body:\n{json.dumps(request.get_json(), indent=4)}")
+
+    if not verify_request_token(request):
+        logging.info("Unauthorized request received. Token verification failed.")
+        return jsonify({"error": "Unauthorized"}), 401
+
+    payload = request.json
+    model = payload.get("model")
+    if not model:
+        logging.warning("No model specified in /v1/responses request, using default")
+        model = "gpt-5.4"
+
+    if model not in proxy_config.model_to_subaccounts:
+        logging.warning(f"Model '{model}' not found, falling back to default")
+        model = "gpt-5.4"
+        if model not in proxy_config.model_to_subaccounts:
+            return jsonify({"error": {"type": "invalid_request_error", "message": f"Model '{model}' not available"}}), 404
+
+    is_stream = payload.get("stream", False)
+    logging.info(f"Responses API - Model: {model}, Streaming: {is_stream}")
+
+    # Convert Responses API format to chat/completions format
+    messages = convert_responses_input_to_messages(payload)
+    chat_payload = {
+        "model": model,
+        "messages": messages,
+        "stream": is_stream
+    }
+
+    # Copy over compatible parameters
+    if "temperature" in payload:
+        chat_payload["temperature"] = payload["temperature"]
+    if "top_p" in payload:
+        chat_payload["top_p"] = payload["top_p"]
+    if "max_output_tokens" in payload:
+        chat_payload["max_tokens"] = payload["max_output_tokens"]
+
+    # Convert tools
+    tools = convert_responses_tools(payload.get("tools"))
+    if tools:
+        chat_payload["tools"] = tools
+        tool_choice = payload.get("tool_choice", "auto")
+        chat_payload["tool_choice"] = tool_choice
+
+    try:
+        if is_claude_model(model):
+            endpoint_url, modified_payload, subaccount_name = handle_claude_request(chat_payload, model)
+        elif is_gemini_model(model):
+            endpoint_url, modified_payload, subaccount_name = handle_gemini_request(chat_payload, model)
+        else:
+            endpoint_url, modified_payload, subaccount_name = handle_default_request(chat_payload, model)
+
+        subaccount_token = fetch_token(subaccount_name)
+        resource_group = proxy_config.subaccounts[subaccount_name].resource_group
+        service_key = proxy_config.subaccounts[subaccount_name].service_key
+
+        headers = {
+            "AI-Resource-Group": resource_group,
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {subaccount_token}",
+            "AI-Tenant-Id": service_key.identityzoneid
+        }
+
+        logging.info(f"Forwarding /v1/responses request to {endpoint_url} with subAccount '{subaccount_name}'")
+
+        if not is_stream:
+            # Non-streaming: forward, get response, convert to Responses format
+            resp = _http_session.post(endpoint_url, headers=headers, json=modified_payload, timeout=300)
+            resp.raise_for_status()
+            completion = resp.json()
+            resp_id = _gen_resp_id()
+            response_data = build_responses_api_response(completion, model, resp_id)
+            return jsonify(response_data), 200
+
+        # Streaming
+        return Response(
+            stream_with_context(generate_responses_streaming(
+                endpoint_url, headers, modified_payload, model, subaccount_name
+            )),
+            content_type='text/event-stream'
+        )
+
+    except ValueError as err:
+        logging.error(f"Value error in /v1/responses: {err}")
+        return jsonify({"error": {"type": "invalid_request_error", "message": str(err)}}), 400
+
+    except Exception as err:
+        logging.error(f"Unexpected error in /v1/responses: {err}", exc_info=True)
+        return jsonify({"error": {"type": "server_error", "message": str(err)}}), 500
 
 
 @app.route('/v1/messages', methods=['POST'])
