@@ -2213,76 +2213,89 @@ def convert_responses_input_to_messages(payload):
         messages.append({"role": "user", "content": input_data})
         return messages
 
-    # Array input - can be messages or content items
+    # Array input - first pass: build intermediate list, then merge consecutive function_calls
     if isinstance(input_data, list):
+        raw_messages = []
         for item in input_data:
             if isinstance(item, str):
-                messages.append({"role": "user", "content": item})
+                raw_messages.append({"role": "user", "content": item})
             elif isinstance(item, dict):
                 item_type = item.get("type")
                 role = item.get("role")
 
-                # Standard message format with role
-                if role:
+                # function_call items need special handling (merge consecutive ones)
+                if item_type == "function_call":
+                    raw_messages.append({"_type": "function_call", "tool_call": {
+                        "id": item.get("call_id", item.get("id", "")),
+                        "type": "function",
+                        "function": {
+                            "name": item.get("name", ""),
+                            "arguments": item.get("arguments", "")
+                        }
+                    }})
+
+                # function_call_output → tool response
+                elif item_type == "function_call_output":
+                    raw_messages.append({
+                        "role": "tool",
+                        "tool_call_id": item.get("call_id", ""),
+                        "content": item.get("output", "")
+                    })
+
+                # Standard message format with role (and not a function_call)
+                elif role and item_type != "function_call":
                     content = item.get("content", "")
-                    # Content can be string or array of content parts
                     if isinstance(content, list):
-                        # Convert input_text/input_image parts to openai format
                         converted_parts = []
                         for part in content:
                             part_type = part.get("type", "")
-                            if part_type == "input_text":
+                            if part_type in ("input_text", "output_text"):
                                 converted_parts.append({"type": "text", "text": part.get("text", "")})
                             elif part_type == "input_image":
                                 img_url = part.get("image_url") or part.get("url", "")
                                 converted_parts.append({"type": "image_url", "image_url": {"url": img_url}})
                             elif part_type == "text":
                                 converted_parts.append({"type": "text", "text": part.get("text", "")})
+                            elif part_type == "refusal":
+                                converted_parts.append({"type": "text", "text": part.get("refusal", "")})
                             else:
-                                converted_parts.append(part)
-                        messages.append({"role": role, "content": converted_parts})
+                                logging.debug(f"Skipping unknown content part type: {part_type}")
+                        if converted_parts:
+                            raw_messages.append({"role": role, "content": converted_parts})
                     else:
-                        messages.append({"role": role, "content": content})
+                        raw_messages.append({"role": role, "content": content})
 
-                # function_call_output → tool response
-                elif item_type == "function_call_output":
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": item.get("call_id", ""),
-                        "content": item.get("output", "")
-                    })
-
-                # Handle message type items
+                # Handle message type items without explicit role at top level
                 elif item_type == "message":
-                    role = item.get("role", "user")
+                    msg_role = item.get("role", "user")
                     content = item.get("content", "")
                     if isinstance(content, list):
-                        text_parts = []
+                        converted_parts = []
                         for part in content:
-                            if part.get("type") == "input_text":
-                                text_parts.append(part.get("text", ""))
-                            elif part.get("type") == "text":
-                                text_parts.append(part.get("text", ""))
-                            elif part.get("type") == "output_text":
-                                text_parts.append(part.get("text", ""))
-                        messages.append({"role": role, "content": "\n".join(text_parts) if text_parts else ""})
+                            part_type = part.get("type", "")
+                            if part_type in ("input_text", "output_text", "text"):
+                                converted_parts.append({"type": "text", "text": part.get("text", "")})
+                            else:
+                                logging.debug(f"Skipping content part type in message: {part_type}")
+                        if converted_parts:
+                            raw_messages.append({"role": msg_role, "content": converted_parts})
                     else:
-                        messages.append({"role": role, "content": content})
+                        raw_messages.append({"role": msg_role, "content": content})
 
-                # function_call item → assistant message with tool_calls
-                elif item_type == "function_call":
+        # Second pass: merge consecutive function_call items into single assistant messages
+        for msg in raw_messages:
+            if "_type" in msg and msg["_type"] == "function_call":
+                # Check if last message is already an assistant with tool_calls
+                if messages and messages[-1].get("role") == "assistant" and "tool_calls" in messages[-1]:
+                    messages[-1]["tool_calls"].append(msg["tool_call"])
+                else:
                     messages.append({
                         "role": "assistant",
                         "content": None,
-                        "tool_calls": [{
-                            "id": item.get("id", item.get("call_id", "")),
-                            "type": "function",
-                            "function": {
-                                "name": item.get("name", ""),
-                                "arguments": item.get("arguments", "")
-                            }
-                        }]
+                        "tool_calls": [msg["tool_call"]]
                     })
+            else:
+                messages.append(msg)
 
     return messages
 
@@ -2417,11 +2430,24 @@ def generate_responses_streaming(endpoint_url, headers, chat_payload, model, sub
 
     try:
         chat_payload["stream"] = True
+        # Remove fields not supported by SAP AI Core backend
+        for key in list(chat_payload.keys()):
+            if key not in ("model", "messages", "stream", "temperature", "top_p",
+                           "max_tokens", "tools", "tool_choice", "n", "stop",
+                           "presence_penalty", "frequency_penalty"):
+                del chat_payload[key]
         response = _http_session.post(
             endpoint_url, headers=headers, json=chat_payload,
             stream=True, timeout=300
         )
-        response.raise_for_status()
+        if response.status_code != 200:
+            error_body = response.text
+            logging.error(f"Backend returned {response.status_code}: {error_body}")
+            yield emit_event("error", {
+                "type": "error",
+                "message": f"Backend error {response.status_code}: {error_body}"
+            })
+            return
 
         for line in response.iter_lines(decode_unicode=True):
             if not line:
@@ -2638,8 +2664,17 @@ def proxy_responses_request():
 
         if not is_stream:
             # Non-streaming: forward, get response, convert to Responses format
+            # Clean payload of unsupported fields
+            for key in list(modified_payload.keys()):
+                if key not in ("model", "messages", "stream", "temperature", "top_p",
+                               "max_tokens", "tools", "tool_choice", "n", "stop",
+                               "presence_penalty", "frequency_penalty"):
+                    del modified_payload[key]
             resp = _http_session.post(endpoint_url, headers=headers, json=modified_payload, timeout=300)
-            resp.raise_for_status()
+            if resp.status_code != 200:
+                error_body = resp.text
+                logging.error(f"Backend returned {resp.status_code} for /v1/responses: {error_body}")
+                return jsonify({"error": {"type": "server_error", "message": f"Backend error: {error_body}"}}), resp.status_code
             completion = resp.json()
             resp_id = _gen_resp_id()
             response_data = build_responses_api_response(completion, model, resp_id)
