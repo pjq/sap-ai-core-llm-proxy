@@ -2396,10 +2396,16 @@ def generate_responses_streaming(endpoint_url, headers, chat_payload, model, sub
         return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
 
     # Emit initial lifecycle events
-    yield emit_event("response.created", base_response.copy())
-    yield emit_event("response.in_progress", base_response.copy())
+    yield emit_event("response.created", {
+        "type": "response.created",
+        "response": base_response.copy()
+    })
+    yield emit_event("response.in_progress", {
+        "type": "response.in_progress",
+        "response": base_response.copy()
+    })
 
-    # Emit output_item.added for the message
+    # Defer message/content_part events until we know there's text
     message_item = {
         "id": msg_id,
         "type": "message",
@@ -2407,20 +2413,7 @@ def generate_responses_streaming(endpoint_url, headers, chat_payload, model, sub
         "role": "assistant",
         "content": []
     }
-    yield emit_event("response.output_item.added", {
-        "type": "response.output_item.added",
-        "output_index": 0,
-        "item": message_item
-    })
-
-    # Emit content_part.added
-    yield emit_event("response.content_part.added", {
-        "type": "response.content_part.added",
-        "item_id": msg_id,
-        "output_index": 0,
-        "content_index": 0,
-        "part": {"type": "output_text", "text": "", "annotations": []}
-    })
+    message_emitted = False
 
     # Now stream from backend
     full_text = ""
@@ -2452,77 +2445,115 @@ def generate_responses_streaming(endpoint_url, headers, chat_payload, model, sub
         for line in response.iter_lines(decode_unicode=True):
             if not line:
                 continue
-            if line.startswith("data: "):
-                data_str = line[6:]
-                if data_str.strip() == "[DONE]":
-                    break
-                try:
-                    chunk = json.loads(data_str)
-                except (json.JSONDecodeError, ValueError):
-                    continue
+            if not line.startswith("data: "):
+                logging.debug(f"Responses streaming: skipping non-data line: {line[:100]}")
+                continue
+            data_str = line[6:]
+            if data_str.strip() == "[DONE]":
+                logging.debug("Responses streaming: received [DONE]")
+                break
+            try:
+                chunk = json.loads(data_str)
+            except (json.JSONDecodeError, ValueError):
+                continue
 
-                choices = chunk.get("choices", [])
-                if not choices:
-                    continue
-                delta = choices[0].get("delta", {})
-
-                # Handle text content deltas
-                content = delta.get("content")
-                if content:
-                    full_text += content
-                    yield emit_event("response.output_text.delta", {
-                        "type": "response.output_text.delta",
-                        "item_id": msg_id,
-                        "output_index": 0,
-                        "content_index": 0,
-                        "delta": content
-                    })
-
-                # Handle tool call deltas
-                tool_calls = delta.get("tool_calls", [])
-                for tc in tool_calls:
-                    tc_index = tc.get("index", 0)
-                    tc_id = tc.get("id")
-                    func = tc.get("function", {})
-
-                    if tc_id:
-                        function_calls[tc_index] = {
-                            "id": tc_id,
-                            "name": func.get("name", ""),
-                            "arguments": ""
-                        }
-
-                    if tc_index in function_calls:
-                        arg_delta = func.get("arguments", "")
-                        if arg_delta:
-                            function_calls[tc_index]["arguments"] += arg_delta
-                            yield emit_event("response.function_call_arguments.delta", {
-                                "type": "response.function_call_arguments.delta",
-                                "item_id": function_calls[tc_index]["id"],
-                                "output_index": 0,
-                                "delta": arg_delta
-                            })
-
-                # Extract usage if present
+            choices = chunk.get("choices", [])
+            if not choices:
+                # Check for usage-only chunk (sent after choices are done)
                 usage = chunk.get("usage")
                 if usage:
                     input_tokens = usage.get("prompt_tokens", input_tokens)
                     output_tokens = usage.get("completion_tokens", output_tokens)
+                continue
+            delta = choices[0].get("delta", {})
+
+            # Handle text content deltas
+            content = delta.get("content")
+            if content:
+                if not message_emitted:
+                    yield emit_event("response.output_item.added", {
+                        "type": "response.output_item.added",
+                        "response_id": resp_id,
+                        "output_index": 0,
+                        "item": message_item
+                    })
+                    yield emit_event("response.content_part.added", {
+                        "type": "response.content_part.added",
+                        "response_id": resp_id,
+                        "item_id": msg_id,
+                        "output_index": 0,
+                        "content_index": 0,
+                        "part": {"type": "output_text", "text": "", "annotations": []}
+                    })
+                    message_emitted = True
+                full_text += content
+                yield emit_event("response.output_text.delta", {
+                    "type": "response.output_text.delta",
+                    "response_id": resp_id,
+                    "item_id": msg_id,
+                    "output_index": 0,
+                    "content_index": 0,
+                    "delta": content
+                })
+
+            # Handle tool call deltas
+            tool_calls = delta.get("tool_calls", [])
+            for tc in tool_calls:
+                tc_index = tc.get("index", 0)
+                tc_id = tc.get("id")
+                func = tc.get("function", {})
+
+                if tc_id:
+                    function_calls[tc_index] = {
+                        "id": tc_id,
+                        "name": func.get("name", ""),
+                        "arguments": ""
+                    }
+                    fc_output_index = (1 if message_emitted else 0) + tc_index
+                    yield emit_event("response.output_item.added", {
+                        "type": "response.output_item.added",
+                        "response_id": resp_id,
+                        "output_index": fc_output_index,
+                        "item": {
+                            "id": tc_id,
+                            "type": "function_call",
+                            "status": "in_progress",
+                            "name": func.get("name", ""),
+                            "arguments": "",
+                            "call_id": tc_id
+                        }
+                    })
+
+                if tc_index in function_calls:
+                    arg_delta = func.get("arguments", "")
+                    if arg_delta:
+                        function_calls[tc_index]["arguments"] += arg_delta
+                        yield emit_event("response.function_call_arguments.delta", {
+                            "type": "response.function_call_arguments.delta",
+                            "response_id": resp_id,
+                            "item_id": function_calls[tc_index]["id"],
+                            "output_index": (1 if message_emitted else 0) + tc_index,
+                            "delta": arg_delta
+                        })
+
+            # Extract usage if present
+            usage = chunk.get("usage")
+            if usage:
+                input_tokens = usage.get("prompt_tokens", input_tokens)
+                output_tokens = usage.get("completion_tokens", output_tokens)
 
         response.close()
 
     except Exception as e:
         logging.error(f"Error streaming responses API: {e}", exc_info=True)
-        yield emit_event("error", {
-            "type": "error",
-            "message": str(e)
-        })
-        return
+        # Don't return - fall through to emit done/completed events
+        # so the client sees a proper stream termination
 
     # Emit done events for text content
     if full_text:
         yield emit_event("response.output_text.done", {
             "type": "response.output_text.done",
+            "response_id": resp_id,
             "item_id": msg_id,
             "output_index": 0,
             "content_index": 0,
@@ -2531,6 +2562,7 @@ def generate_responses_streaming(endpoint_url, headers, chat_payload, model, sub
 
         yield emit_event("response.content_part.done", {
             "type": "response.content_part.done",
+            "response_id": resp_id,
             "item_id": msg_id,
             "output_index": 0,
             "content_index": 0,
@@ -2541,6 +2573,7 @@ def generate_responses_streaming(endpoint_url, headers, chat_payload, model, sub
         message_item["status"] = "completed"
         yield emit_event("response.output_item.done", {
             "type": "response.output_item.done",
+            "response_id": resp_id,
             "output_index": 0,
             "item": message_item
         })
@@ -2564,6 +2597,7 @@ def generate_responses_streaming(endpoint_url, headers, chat_payload, model, sub
 
         yield emit_event("response.function_call_arguments.done", {
             "type": "response.function_call_arguments.done",
+            "response_id": resp_id,
             "item_id": tc["id"],
             "output_index": len(output_items) - 1,
             "arguments": tc["arguments"]
@@ -2571,6 +2605,7 @@ def generate_responses_streaming(endpoint_url, headers, chat_payload, model, sub
 
         yield emit_event("response.output_item.done", {
             "type": "response.output_item.done",
+            "response_id": resp_id,
             "output_index": len(output_items) - 1,
             "item": fc_item
         })
@@ -2589,7 +2624,11 @@ def generate_responses_streaming(endpoint_url, headers, chat_payload, model, sub
             "total_tokens": input_tokens + output_tokens
         }
     }
-    yield emit_event("response.completed", completed_response)
+    logging.info(f"Responses streaming: emitting response.completed for {resp_id}")
+    yield emit_event("response.completed", {
+        "type": "response.completed",
+        "response": completed_response
+    })
 
 
 @app.route('/v1/responses', methods=['POST'])
@@ -2685,7 +2724,12 @@ def proxy_responses_request():
             stream_with_context(generate_responses_streaming(
                 endpoint_url, headers, modified_payload, model, subaccount_name
             )),
-            content_type='text/event-stream'
+            content_type='text/event-stream',
+            headers={
+                'Cache-Control': 'no-cache',
+                'Connection': 'keep-alive',
+                'X-Accel-Buffering': 'no',
+            }
         )
 
     except ValueError as err:

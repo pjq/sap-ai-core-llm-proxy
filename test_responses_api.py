@@ -277,5 +277,158 @@ class TestIdGeneration(unittest.TestCase):
         self.assertEqual(len(ids), 100)
 
 
+class TestGenerateResponsesStreaming(unittest.TestCase):
+    """Test SSE event format for streaming responses."""
+
+    def _collect_events(self, generator):
+        """Parse SSE events from generator output."""
+        events = []
+        for chunk in generator:
+            lines = chunk.strip().split("\n")
+            event_type = None
+            data = None
+            for line in lines:
+                if line.startswith("event: "):
+                    event_type = line[7:]
+                elif line.startswith("data: "):
+                    data = json.loads(line[6:])
+            if event_type and data:
+                events.append((event_type, data))
+        return events
+
+    @patch('proxy_server._http_session')
+    @patch('proxy_server.fetch_token', return_value='test-token')
+    def test_text_streaming_event_format(self, mock_token, mock_session):
+        """Verify SSE events match the OpenAI Responses API spec."""
+        from proxy_server import generate_responses_streaming
+
+        # Mock backend streaming response
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.iter_lines.return_value = iter([
+            'data: {"choices":[{"delta":{"role":"assistant"},"index":0}]}',
+            'data: {"choices":[{"delta":{"content":"Hello"},"index":0}]}',
+            'data: {"choices":[{"delta":{"content":" world"},"index":0}]}',
+            'data: {"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}',
+            'data: [DONE]',
+        ])
+        mock_session.post.return_value = mock_response
+
+        events = self._collect_events(
+            generate_responses_streaming("http://test", {}, {"messages": []}, "gpt-5.4", "test")
+        )
+
+        # Check response.created has nested response object
+        self.assertEqual(events[0][0], "response.created")
+        self.assertIn("response", events[0][1])
+        self.assertEqual(events[0][1]["type"], "response.created")
+        self.assertEqual(events[0][1]["response"]["status"], "in_progress")
+
+        # Check response.in_progress
+        self.assertEqual(events[1][0], "response.in_progress")
+        self.assertIn("response", events[1][1])
+        self.assertEqual(events[1][1]["type"], "response.in_progress")
+
+        # Check output_item.added has response_id
+        self.assertEqual(events[2][0], "response.output_item.added")
+        self.assertIn("response_id", events[2][1])
+        self.assertEqual(events[2][1]["item"]["type"], "message")
+
+        # Check content_part.added
+        self.assertEqual(events[3][0], "response.content_part.added")
+        self.assertIn("response_id", events[3][1])
+
+        # Check text deltas have response_id
+        text_deltas = [(t, d) for t, d in events if t == "response.output_text.delta"]
+        self.assertEqual(len(text_deltas), 2)
+        self.assertEqual(text_deltas[0][1]["delta"], "Hello")
+        self.assertEqual(text_deltas[1][1]["delta"], " world")
+        self.assertIn("response_id", text_deltas[0][1])
+
+        # Check response.completed has nested response object
+        completed = [(t, d) for t, d in events if t == "response.completed"]
+        self.assertEqual(len(completed), 1)
+        self.assertIn("response", completed[0][1])
+        self.assertEqual(completed[0][1]["type"], "response.completed")
+        self.assertEqual(completed[0][1]["response"]["status"], "completed")
+        self.assertEqual(completed[0][1]["response"]["usage"]["input_tokens"], 5)
+        self.assertEqual(completed[0][1]["response"]["usage"]["output_tokens"], 2)
+
+    @patch('proxy_server._http_session')
+    @patch('proxy_server.fetch_token', return_value='test-token')
+    def test_function_call_streaming_event_format(self, mock_token, mock_session):
+        """Verify function call SSE events match OpenAI spec."""
+        from proxy_server import generate_responses_streaming
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.iter_lines.return_value = iter([
+            'data: {"choices":[{"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_abc","type":"function","function":{"name":"get_weather","arguments":""}}]},"index":0}]}',
+            'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"city\\""}}]},"index":0}]}',
+            'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":": \\"NYC\\"}"}}]},"index":0}]}',
+            'data: [DONE]',
+        ])
+        mock_session.post.return_value = mock_response
+
+        events = self._collect_events(
+            generate_responses_streaming("http://test", {}, {"messages": []}, "gpt-5.4", "test")
+        )
+
+        # Find function call events
+        fc_added = [(t, d) for t, d in events if t == "response.output_item.added" and d.get("item", {}).get("type") == "function_call"]
+        self.assertEqual(len(fc_added), 1)
+        self.assertEqual(fc_added[0][1]["item"]["name"], "get_weather")
+        self.assertEqual(fc_added[0][1]["item"]["call_id"], "call_abc")
+        self.assertIn("response_id", fc_added[0][1])
+
+        # Check arguments deltas
+        arg_deltas = [(t, d) for t, d in events if t == "response.function_call_arguments.delta"]
+        self.assertEqual(len(arg_deltas), 2)
+        self.assertIn("response_id", arg_deltas[0][1])
+
+        # Check done events
+        arg_done = [(t, d) for t, d in events if t == "response.function_call_arguments.done"]
+        self.assertEqual(len(arg_done), 1)
+        self.assertEqual(arg_done[0][1]["arguments"], '{"city": "NYC"}')
+        self.assertIn("response_id", arg_done[0][1])
+
+        # Check response.completed
+        completed = [(t, d) for t, d in events if t == "response.completed"]
+        self.assertEqual(len(completed), 1)
+        self.assertIn("response", completed[0][1])
+        fc_output = completed[0][1]["response"]["output"]
+        self.assertEqual(len(fc_output), 1)
+        self.assertEqual(fc_output[0]["type"], "function_call")
+        self.assertEqual(fc_output[0]["name"], "get_weather")
+
+    @patch('proxy_server._http_session')
+    @patch('proxy_server.fetch_token', return_value='test-token')
+    def test_all_events_have_sequence_number(self, mock_token, mock_session):
+        """Every SSE event must have a sequence_number field."""
+        from proxy_server import generate_responses_streaming
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.iter_lines.return_value = iter([
+            'data: {"choices":[{"delta":{"content":"Hi"},"index":0}]}',
+            'data: [DONE]',
+        ])
+        mock_session.post.return_value = mock_response
+
+        events = self._collect_events(
+            generate_responses_streaming("http://test", {}, {"messages": []}, "gpt-5.4", "test")
+        )
+
+        for event_type, data in events:
+            self.assertIn("sequence_number", data,
+                          f"Event {event_type} missing sequence_number")
+            self.assertIsInstance(data["sequence_number"], int)
+
+        # Verify sequence numbers are monotonically increasing
+        seq_nums = [d["sequence_number"] for _, d in events]
+        self.assertEqual(seq_nums, sorted(seq_nums))
+        self.assertEqual(len(set(seq_nums)), len(seq_nums))
+
+
 if __name__ == "__main__":
     unittest.main()
