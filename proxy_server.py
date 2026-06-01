@@ -2385,34 +2385,13 @@ def convert_responses_input_to_messages(payload):
     # Validate: strip orphaned tool_calls that have no matching tool response.
     # The backend rejects assistant messages with tool_calls if the corresponding
     # tool response messages are missing from the conversation.
-    # Exception: tool_calls at the very end of the conversation (the latest assistant
-    # turn) are kept — these are pending calls that haven't been executed yet.
     tool_response_ids = {
         msg["tool_call_id"] for msg in messages
         if msg.get("role") == "tool" and "tool_call_id" in msg
     }
 
-    # Find the last assistant message index that has tool_calls
-    last_tc_idx = None
-    for i in range(len(messages) - 1, -1, -1):
-        if messages[i].get("role") == "assistant" and "tool_calls" in messages[i]:
-            last_tc_idx = i
-            break
-
-    # Check if the last tool_calls assistant message is truly at the end
-    # (no non-tool messages after it)
-    last_tc_is_trailing = False
-    if last_tc_idx is not None:
-        trailing_msgs = messages[last_tc_idx + 1:]
-        last_tc_is_trailing = all(
-            msg.get("role") == "tool" for msg in trailing_msgs
-        ) or not trailing_msgs
-
-    for i, msg in enumerate(messages):
+    for msg in messages:
         if msg.get("role") == "assistant" and "tool_calls" in msg:
-            # Skip validation for trailing tool_calls (latest turn, pending execution)
-            if last_tc_is_trailing and i == last_tc_idx:
-                continue
             original_calls = msg["tool_calls"]
             orphaned = [tc for tc in original_calls if tc.get("id") not in tool_response_ids]
             if orphaned:
@@ -2432,6 +2411,53 @@ def convert_responses_input_to_messages(payload):
         msg for msg in messages
         if not (msg.get("role") == "assistant" and msg.get("content") == "" and "tool_calls" not in msg)
     ]
+
+    # Reorder: tool responses must immediately follow their assistant tool_call message.
+    # Codex CLI can inject developer/user messages between a tool_call and its response
+    # (e.g. permission approvals), which the backend rejects.
+    # Build index: tool_call_id → index of that tool response in messages
+    tool_msg_indices = {}
+    for i, msg in enumerate(messages):
+        if msg.get("role") == "tool" and "tool_call_id" in msg:
+            tool_msg_indices[msg["tool_call_id"]] = i
+
+    # Check if reordering is needed
+    needs_reorder = False
+    for i, msg in enumerate(messages):
+        if msg.get("role") == "assistant" and "tool_calls" in msg:
+            tc_ids = [tc.get("id") for tc in msg["tool_calls"]]
+            for offset, tc_id in enumerate(tc_ids):
+                expected_idx = i + 1 + offset
+                actual_idx = tool_msg_indices.get(tc_id)
+                if actual_idx is not None and actual_idx != expected_idx:
+                    needs_reorder = True
+                    break
+            if needs_reorder:
+                break
+
+    if needs_reorder:
+        # Collect indices of all tool response messages that will be relocated
+        relocated_indices = set()
+        for i, msg in enumerate(messages):
+            if msg.get("role") == "assistant" and "tool_calls" in msg:
+                tc_ids = [tc.get("id") for tc in msg["tool_calls"]]
+                for tc_id in tc_ids:
+                    idx = tool_msg_indices.get(tc_id)
+                    if idx is not None and idx != i + 1:
+                        relocated_indices.add(idx)
+
+        reordered = []
+        for i, msg in enumerate(messages):
+            if i in relocated_indices:
+                continue
+            reordered.append(msg)
+            if msg.get("role") == "assistant" and "tool_calls" in msg:
+                tc_ids = [tc.get("id") for tc in msg["tool_calls"]]
+                for tc_id in tc_ids:
+                    idx = tool_msg_indices.get(tc_id)
+                    if idx is not None and idx in relocated_indices:
+                        reordered.append(messages[idx])
+        messages = reordered
 
     return messages
 

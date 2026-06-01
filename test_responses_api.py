@@ -50,14 +50,18 @@ class TestConvertResponsesInputToMessages(unittest.TestCase):
         self.assertEqual(messages[0]["content"], [{"type": "text", "text": "I said hi"}])
 
     def test_function_call_uses_call_id(self):
+        """A function_call with matching output uses call_id as the tool_call id."""
         payload = {"input": [
-            {"type": "function_call", "id": "fc_1", "call_id": "call_abc", "name": "my_func", "arguments": "{}"}
+            {"type": "function_call", "id": "fc_1", "call_id": "call_abc", "name": "my_func", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "call_abc", "output": "done"}
         ]}
         messages = convert_responses_input_to_messages(payload)
-        self.assertEqual(len(messages), 1)
+        self.assertEqual(len(messages), 2)
         self.assertEqual(messages[0]["role"], "assistant")
         self.assertEqual(messages[0]["tool_calls"][0]["id"], "call_abc")
         self.assertEqual(messages[0]["tool_calls"][0]["function"]["name"], "my_func")
+        self.assertEqual(messages[1]["role"], "tool")
+        self.assertEqual(messages[1]["tool_call_id"], "call_abc")
 
     def test_function_call_output(self):
         payload = {"input": [
@@ -196,16 +200,36 @@ class TestConvertResponsesInputToMessages(unittest.TestCase):
         roles = [msg["role"] for msg in messages]
         self.assertEqual(roles, ["user", "user"])
 
-    def test_trailing_tool_calls_without_output_are_kept(self):
-        """Tool calls at the end of conversation (pending execution) are NOT stripped."""
+    def test_trailing_tool_calls_without_output_are_stripped(self):
+        """Tool calls at the end without output are also stripped (backend rejects them)."""
         payload = {"input": [
             {"role": "user", "content": [{"type": "input_text", "text": "do it"}]},
             {"type": "function_call", "call_id": "call_pending", "name": "exec_cmd", "arguments": "{}"},
         ]}
         messages = convert_responses_input_to_messages(payload)
-        self.assertEqual(len(messages), 2)
-        self.assertEqual(messages[1]["role"], "assistant")
-        self.assertEqual(messages[1]["tool_calls"][0]["id"], "call_pending")
+        # Only the user message remains
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(messages[0]["role"], "user")
+
+    def test_interleaved_developer_message_reordered(self):
+        """Developer messages between tool_call and tool response are moved after the tool response."""
+        payload = {"input": [
+            {"role": "user", "content": [{"type": "input_text", "text": "run git checkout"}]},
+            {"role": "assistant", "content": [{"type": "output_text", "text": "Creating branch..."}]},
+            {"type": "function_call", "call_id": "call_git", "name": "exec_command", "arguments": "{\"cmd\":\"git checkout -b new\"}"},
+            {"role": "developer", "content": [{"type": "input_text", "text": "Approved command prefix saved: git checkout"}]},
+            {"type": "function_call_output", "call_id": "call_git", "output": "Switched to a new branch 'new'"},
+            {"role": "user", "content": [{"type": "input_text", "text": "continue"}]}
+        ]}
+        messages = convert_responses_input_to_messages(payload)
+        # Find the assistant with tool_calls
+        tc_idx = next(i for i, m in enumerate(messages) if m.get("role") == "assistant" and "tool_calls" in m)
+        # Tool response must immediately follow the assistant tool_calls
+        self.assertEqual(messages[tc_idx + 1]["role"], "tool")
+        self.assertEqual(messages[tc_idx + 1]["tool_call_id"], "call_git")
+        # Developer message comes after the tool response
+        dev_idx = next(i for i, m in enumerate(messages) if m.get("role") == "developer")
+        self.assertGreater(dev_idx, tc_idx + 1)
 
 
 class TestConvertResponsesTools(unittest.TestCase):
