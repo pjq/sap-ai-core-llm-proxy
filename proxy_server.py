@@ -2195,6 +2195,91 @@ def _gen_item_id():
     return f"item_{uuid.uuid4().hex[:48]}"
 
 
+def _normalize_response_text_parts(content):
+    """Convert assistant content into Responses API output_text parts."""
+    if not content:
+        return []
+
+    if isinstance(content, str):
+        return [{"type": "output_text", "text": content, "annotations": []}]
+
+    if isinstance(content, list):
+        parts = []
+        for part in content:
+            if isinstance(part, str):
+                parts.append({"type": "output_text", "text": part, "annotations": []})
+                continue
+            if not isinstance(part, dict):
+                continue
+
+            part_type = part.get("type")
+            if part_type in ("text", "input_text", "output_text"):
+                parts.append({
+                    "type": "output_text",
+                    "text": part.get("text", ""),
+                    "annotations": part.get("annotations", [])
+                })
+            elif part_type == "refusal":
+                parts.append({
+                    "type": "refusal",
+                    "refusal": part.get("refusal") or part.get("text", "")
+                })
+        return parts
+
+    return []
+
+
+def _build_response_usage(usage_data):
+    """Build Responses API usage object from chat/completions usage."""
+    input_tokens = usage_data.get("prompt_tokens", 0)
+    output_tokens = usage_data.get("completion_tokens", 0)
+    total_tokens = usage_data.get("total_tokens", input_tokens + output_tokens)
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens,
+        "input_tokens_details": {"cached_tokens": 0},
+        "output_tokens_details": {"reasoning_tokens": 0}
+    }
+
+
+def _build_response_object(resp_id, model, created_at, status, output, usage):
+    """Build a consistent Responses API top-level object."""
+    output_text = "".join(
+        part.get("text", "")
+        for item in output
+        if item.get("type") == "message"
+        for part in item.get("content", [])
+        if part.get("type") == "output_text"
+    )
+    return {
+        "id": resp_id,
+        "object": "response",
+        "created_at": created_at,
+        "status": status,
+        "error": None,
+        "incomplete_details": None,
+        "instructions": None,
+        "max_output_tokens": None,
+        "model": model,
+        "output": output,
+        "parallel_tool_calls": True,
+        "previous_response_id": None,
+        "reasoning": {"effort": None, "summary": None},
+        "store": True,
+        "temperature": None,
+        "text": {"format": {"type": "text"}},
+        "tool_choice": "auto",
+        "tools": [],
+        "top_p": None,
+        "truncation": "disabled",
+        "usage": usage,
+        "user": None,
+        "metadata": {},
+        "output_text": output_text
+    }
+
+
 def convert_responses_input_to_messages(payload):
     """Convert Responses API input format to chat/completions messages."""
     messages = []
@@ -2297,6 +2382,83 @@ def convert_responses_input_to_messages(payload):
             else:
                 messages.append(msg)
 
+    # Validate: strip orphaned tool_calls that have no matching tool response.
+    # The backend rejects assistant messages with tool_calls if the corresponding
+    # tool response messages are missing from the conversation.
+    tool_response_ids = {
+        msg["tool_call_id"] for msg in messages
+        if msg.get("role") == "tool" and "tool_call_id" in msg
+    }
+
+    for msg in messages:
+        if msg.get("role") == "assistant" and "tool_calls" in msg:
+            original_calls = msg["tool_calls"]
+            orphaned = [tc for tc in original_calls if tc.get("id") not in tool_response_ids]
+            if orphaned:
+                logging.warning(f"Stripping {len(orphaned)} orphaned tool_call(s) with no response: "
+                                f"{[tc.get('id') for tc in orphaned]}")
+            msg["tool_calls"] = [
+                tc for tc in original_calls
+                if tc.get("id") in tool_response_ids
+            ]
+            if not msg["tool_calls"]:
+                del msg["tool_calls"]
+                if msg.get("content") is None:
+                    msg["content"] = ""
+
+    # Remove empty assistant messages that had all tool_calls stripped
+    messages = [
+        msg for msg in messages
+        if not (msg.get("role") == "assistant" and msg.get("content") == "" and "tool_calls" not in msg)
+    ]
+
+    # Reorder: tool responses must immediately follow their assistant tool_call message.
+    # Codex CLI can inject developer/user messages between a tool_call and its response
+    # (e.g. permission approvals), which the backend rejects.
+    # Build index: tool_call_id → index of that tool response in messages
+    tool_msg_indices = {}
+    for i, msg in enumerate(messages):
+        if msg.get("role") == "tool" and "tool_call_id" in msg:
+            tool_msg_indices[msg["tool_call_id"]] = i
+
+    # Check if reordering is needed
+    needs_reorder = False
+    for i, msg in enumerate(messages):
+        if msg.get("role") == "assistant" and "tool_calls" in msg:
+            tc_ids = [tc.get("id") for tc in msg["tool_calls"]]
+            for offset, tc_id in enumerate(tc_ids):
+                expected_idx = i + 1 + offset
+                actual_idx = tool_msg_indices.get(tc_id)
+                if actual_idx is not None and actual_idx != expected_idx:
+                    needs_reorder = True
+                    break
+            if needs_reorder:
+                break
+
+    if needs_reorder:
+        # Collect indices of all tool response messages that will be relocated
+        relocated_indices = set()
+        for i, msg in enumerate(messages):
+            if msg.get("role") == "assistant" and "tool_calls" in msg:
+                tc_ids = [tc.get("id") for tc in msg["tool_calls"]]
+                for tc_id in tc_ids:
+                    idx = tool_msg_indices.get(tc_id)
+                    if idx is not None and idx != i + 1:
+                        relocated_indices.add(idx)
+
+        reordered = []
+        for i, msg in enumerate(messages):
+            if i in relocated_indices:
+                continue
+            reordered.append(msg)
+            if msg.get("role") == "assistant" and "tool_calls" in msg:
+                tc_ids = [tc.get("id") for tc in msg["tool_calls"]]
+                for tc_id in tc_ids:
+                    idx = tool_msg_indices.get(tc_id)
+                    if idx is not None and idx in relocated_indices:
+                        reordered.append(messages[idx])
+        messages = reordered
+
     return messages
 
 
@@ -2342,32 +2504,18 @@ def build_responses_api_response(completion_response, model, resp_id):
                 })
 
         # Handle text content
-        content = message.get("content")
-        if content:
+        content_parts = _normalize_response_text_parts(message.get("content"))
+        if content_parts:
             output.append({
                 "id": _gen_msg_id(),
                 "type": "message",
                 "status": "completed",
                 "role": "assistant",
-                "content": [{"type": "output_text", "text": content, "annotations": []}]
+                "content": content_parts
             })
 
-    usage_data = completion_response.get("usage", {})
-    usage = {
-        "input_tokens": usage_data.get("prompt_tokens", 0),
-        "output_tokens": usage_data.get("completion_tokens", 0),
-        "total_tokens": usage_data.get("total_tokens", 0)
-    }
-
-    return {
-        "id": resp_id,
-        "object": "response",
-        "created_at": created_at,
-        "status": "completed",
-        "model": model,
-        "output": output,
-        "usage": usage
-    }
+    usage = _build_response_usage(completion_response.get("usage", {}))
+    return _build_response_object(resp_id, model, created_at, "completed", output, usage)
 
 
 def generate_responses_streaming(endpoint_url, headers, chat_payload, model, subaccount_name):
@@ -2378,15 +2526,7 @@ def generate_responses_streaming(endpoint_url, headers, chat_payload, model, sub
     sequence_number = 0
 
     # Build the base response object
-    base_response = {
-        "id": resp_id,
-        "object": "response",
-        "created_at": created_at,
-        "status": "in_progress",
-        "model": model,
-        "output": [],
-        "usage": None
-    }
+    base_response = _build_response_object(resp_id, model, created_at, "in_progress", [], None)
 
     def emit_event(event_type, data):
         nonlocal sequence_number
@@ -2611,19 +2751,18 @@ def generate_responses_streaming(endpoint_url, headers, chat_payload, model, sub
         })
 
     # Emit response.completed
-    completed_response = {
-        "id": resp_id,
-        "object": "response",
-        "created_at": created_at,
-        "status": "completed",
-        "model": model,
-        "output": output_items,
-        "usage": {
-            "input_tokens": input_tokens,
-            "output_tokens": output_tokens,
+    completed_response = _build_response_object(
+        resp_id,
+        model,
+        created_at,
+        "completed",
+        output_items,
+        _build_response_usage({
+            "prompt_tokens": input_tokens,
+            "completion_tokens": output_tokens,
             "total_tokens": input_tokens + output_tokens
-        }
-    }
+        })
+    )
     logging.info(f"Responses streaming: emitting response.completed for {resp_id}")
     yield emit_event("response.completed", {
         "type": "response.completed",

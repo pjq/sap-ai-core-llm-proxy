@@ -50,14 +50,18 @@ class TestConvertResponsesInputToMessages(unittest.TestCase):
         self.assertEqual(messages[0]["content"], [{"type": "text", "text": "I said hi"}])
 
     def test_function_call_uses_call_id(self):
+        """A function_call with matching output uses call_id as the tool_call id."""
         payload = {"input": [
-            {"type": "function_call", "id": "fc_1", "call_id": "call_abc", "name": "my_func", "arguments": "{}"}
+            {"type": "function_call", "id": "fc_1", "call_id": "call_abc", "name": "my_func", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "call_abc", "output": "done"}
         ]}
         messages = convert_responses_input_to_messages(payload)
-        self.assertEqual(len(messages), 1)
+        self.assertEqual(len(messages), 2)
         self.assertEqual(messages[0]["role"], "assistant")
         self.assertEqual(messages[0]["tool_calls"][0]["id"], "call_abc")
         self.assertEqual(messages[0]["tool_calls"][0]["function"]["name"], "my_func")
+        self.assertEqual(messages[1]["role"], "tool")
+        self.assertEqual(messages[1]["tool_call_id"], "call_abc")
 
     def test_function_call_output(self):
         payload = {"input": [
@@ -162,6 +166,71 @@ class TestConvertResponsesInputToMessages(unittest.TestCase):
         self.assertEqual(messages[0], {"role": "user", "content": "hello"})
         self.assertEqual(messages[1], {"role": "user", "content": "world"})
 
+    def test_orphaned_tool_calls_stripped(self):
+        """Tool calls without matching function_call_output should be removed."""
+        payload = {"input": [
+            {"role": "user", "content": [{"type": "input_text", "text": "do something"}]},
+            {"type": "function_call", "call_id": "call_good", "name": "func_a", "arguments": "{}"},
+            {"type": "function_call", "call_id": "call_orphan", "name": "func_b", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "call_good", "output": "result"},
+            # No output for call_orphan
+            {"role": "user", "content": [{"type": "input_text", "text": "continue"}]}
+        ]}
+        messages = convert_responses_input_to_messages(payload)
+        # The orphaned tool_call should be stripped
+        tool_call_ids = []
+        for msg in messages:
+            if msg.get("role") == "assistant" and "tool_calls" in msg:
+                for tc in msg["tool_calls"]:
+                    tool_call_ids.append(tc["id"])
+        self.assertIn("call_good", tool_call_ids)
+        self.assertNotIn("call_orphan", tool_call_ids)
+
+    def test_all_tool_calls_orphaned_removes_assistant_msg(self):
+        """If ALL tool calls in a mid-conversation assistant message are orphaned, the message is removed."""
+        payload = {"input": [
+            {"role": "user", "content": [{"type": "input_text", "text": "hi"}]},
+            {"type": "function_call", "call_id": "call_orphan1", "name": "func_a", "arguments": "{}"},
+            {"type": "function_call", "call_id": "call_orphan2", "name": "func_b", "arguments": "{}"},
+            # No function_call_output for either, but more messages follow
+            {"role": "user", "content": [{"type": "input_text", "text": "ok"}]}
+        ]}
+        messages = convert_responses_input_to_messages(payload)
+        # The assistant message with orphaned tool_calls should be completely removed
+        roles = [msg["role"] for msg in messages]
+        self.assertEqual(roles, ["user", "user"])
+
+    def test_trailing_tool_calls_without_output_are_stripped(self):
+        """Tool calls at the end without output are also stripped (backend rejects them)."""
+        payload = {"input": [
+            {"role": "user", "content": [{"type": "input_text", "text": "do it"}]},
+            {"type": "function_call", "call_id": "call_pending", "name": "exec_cmd", "arguments": "{}"},
+        ]}
+        messages = convert_responses_input_to_messages(payload)
+        # Only the user message remains
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(messages[0]["role"], "user")
+
+    def test_interleaved_developer_message_reordered(self):
+        """Developer messages between tool_call and tool response are moved after the tool response."""
+        payload = {"input": [
+            {"role": "user", "content": [{"type": "input_text", "text": "run git checkout"}]},
+            {"role": "assistant", "content": [{"type": "output_text", "text": "Creating branch..."}]},
+            {"type": "function_call", "call_id": "call_git", "name": "exec_command", "arguments": "{\"cmd\":\"git checkout -b new\"}"},
+            {"role": "developer", "content": [{"type": "input_text", "text": "Approved command prefix saved: git checkout"}]},
+            {"type": "function_call_output", "call_id": "call_git", "output": "Switched to a new branch 'new'"},
+            {"role": "user", "content": [{"type": "input_text", "text": "continue"}]}
+        ]}
+        messages = convert_responses_input_to_messages(payload)
+        # Find the assistant with tool_calls
+        tc_idx = next(i for i, m in enumerate(messages) if m.get("role") == "assistant" and "tool_calls" in m)
+        # Tool response must immediately follow the assistant tool_calls
+        self.assertEqual(messages[tc_idx + 1]["role"], "tool")
+        self.assertEqual(messages[tc_idx + 1]["tool_call_id"], "call_git")
+        # Developer message comes after the tool response
+        dev_idx = next(i for i, m in enumerate(messages) if m.get("role") == "developer")
+        self.assertGreater(dev_idx, tc_idx + 1)
+
 
 class TestConvertResponsesTools(unittest.TestCase):
 
@@ -210,8 +279,14 @@ class TestBuildResponsesApiResponse(unittest.TestCase):
         self.assertEqual(result["output"][0]["type"], "message")
         self.assertEqual(result["output"][0]["content"][0]["type"], "output_text")
         self.assertEqual(result["output"][0]["content"][0]["text"], "Hello!")
+        self.assertEqual(result["output_text"], "Hello!")
+        self.assertIsNone(result["error"])
+        self.assertTrue(result["parallel_tool_calls"])
+        self.assertEqual(result["text"]["format"]["type"], "text")
         self.assertEqual(result["usage"]["input_tokens"], 5)
         self.assertEqual(result["usage"]["output_tokens"], 3)
+        self.assertEqual(result["usage"]["input_tokens_details"]["cached_tokens"], 0)
+        self.assertEqual(result["usage"]["output_tokens_details"]["reasoning_tokens"], 0)
 
     def test_tool_call_response(self):
         completion = {
@@ -258,6 +333,19 @@ class TestBuildResponsesApiResponse(unittest.TestCase):
         completion = {"choices": [], "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}}
         result = build_responses_api_response(completion, "gpt-5.4", "resp_empty")
         self.assertEqual(result["output"], [])
+        self.assertEqual(result["output_text"], "")
+
+    def test_list_content_response(self):
+        completion = {
+            "choices": [{"message": {"role": "assistant", "content": [
+                {"type": "text", "text": "Hello"},
+                {"type": "output_text", "text": " world", "annotations": [{"type": "citation"}]}
+            ]}}],
+            "usage": {"prompt_tokens": 4, "completion_tokens": 2, "total_tokens": 6}
+        }
+        result = build_responses_api_response(completion, "gpt-5.4", "resp_list")
+        self.assertEqual(result["output_text"], "Hello world")
+        self.assertEqual(result["output"][0]["content"][1]["annotations"], [{"type": "citation"}])
 
 
 class TestIdGeneration(unittest.TestCase):
@@ -323,6 +411,7 @@ class TestGenerateResponsesStreaming(unittest.TestCase):
         self.assertIn("response", events[0][1])
         self.assertEqual(events[0][1]["type"], "response.created")
         self.assertEqual(events[0][1]["response"]["status"], "in_progress")
+        self.assertEqual(events[0][1]["response"]["output_text"], "")
 
         # Check response.in_progress
         self.assertEqual(events[1][0], "response.in_progress")
@@ -351,8 +440,10 @@ class TestGenerateResponsesStreaming(unittest.TestCase):
         self.assertIn("response", completed[0][1])
         self.assertEqual(completed[0][1]["type"], "response.completed")
         self.assertEqual(completed[0][1]["response"]["status"], "completed")
+        self.assertEqual(completed[0][1]["response"]["output_text"], "Hello world")
         self.assertEqual(completed[0][1]["response"]["usage"]["input_tokens"], 5)
         self.assertEqual(completed[0][1]["response"]["usage"]["output_tokens"], 2)
+        self.assertEqual(completed[0][1]["response"]["usage"]["output_tokens_details"]["reasoning_tokens"], 0)
 
     @patch('proxy_server._http_session')
     @patch('proxy_server.fetch_token', return_value='test-token')
