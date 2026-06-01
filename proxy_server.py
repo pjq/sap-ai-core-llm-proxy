@@ -9,6 +9,7 @@ import json
 import base64
 import random
 import os
+import uuid
 from datetime import datetime
 import argparse
 import re
@@ -2178,6 +2179,566 @@ def proxy_openai_stream():
     except Exception as err:
         logging.error(f"Unexpected error during request handling: {err}", exc_info=True)
         return jsonify({"error": str(err)}), 500
+
+
+# ============================================================
+# OpenAI Responses API (/v1/responses)
+# ============================================================
+
+def _gen_resp_id():
+    return f"resp_{uuid.uuid4().hex[:48]}"
+
+def _gen_msg_id():
+    return f"msg_{uuid.uuid4().hex[:48]}"
+
+def _gen_item_id():
+    return f"item_{uuid.uuid4().hex[:48]}"
+
+
+def convert_responses_input_to_messages(payload):
+    """Convert Responses API input format to chat/completions messages."""
+    messages = []
+
+    # Handle instructions → system message
+    instructions = payload.get("instructions")
+    if instructions:
+        messages.append({"role": "system", "content": instructions})
+
+    input_data = payload.get("input")
+    if input_data is None:
+        return messages
+
+    # Simple string input → single user message
+    if isinstance(input_data, str):
+        messages.append({"role": "user", "content": input_data})
+        return messages
+
+    # Array input - first pass: build intermediate list, then merge consecutive function_calls
+    if isinstance(input_data, list):
+        raw_messages = []
+        for item in input_data:
+            if isinstance(item, str):
+                raw_messages.append({"role": "user", "content": item})
+            elif isinstance(item, dict):
+                item_type = item.get("type")
+                role = item.get("role")
+
+                # function_call items need special handling (merge consecutive ones)
+                if item_type == "function_call":
+                    raw_messages.append({"_type": "function_call", "tool_call": {
+                        "id": item.get("call_id", item.get("id", "")),
+                        "type": "function",
+                        "function": {
+                            "name": item.get("name", ""),
+                            "arguments": item.get("arguments", "")
+                        }
+                    }})
+
+                # function_call_output → tool response
+                elif item_type == "function_call_output":
+                    raw_messages.append({
+                        "role": "tool",
+                        "tool_call_id": item.get("call_id", ""),
+                        "content": item.get("output", "")
+                    })
+
+                # Standard message format with role (and not a function_call)
+                elif role and item_type != "function_call":
+                    content = item.get("content", "")
+                    if isinstance(content, list):
+                        converted_parts = []
+                        for part in content:
+                            part_type = part.get("type", "")
+                            if part_type in ("input_text", "output_text"):
+                                converted_parts.append({"type": "text", "text": part.get("text", "")})
+                            elif part_type == "input_image":
+                                img_url = part.get("image_url") or part.get("url", "")
+                                converted_parts.append({"type": "image_url", "image_url": {"url": img_url}})
+                            elif part_type == "text":
+                                converted_parts.append({"type": "text", "text": part.get("text", "")})
+                            elif part_type == "refusal":
+                                converted_parts.append({"type": "text", "text": part.get("refusal", "")})
+                            else:
+                                logging.debug(f"Skipping unknown content part type: {part_type}")
+                        if converted_parts:
+                            raw_messages.append({"role": role, "content": converted_parts})
+                    else:
+                        raw_messages.append({"role": role, "content": content})
+
+                # Handle message type items without explicit role at top level
+                elif item_type == "message":
+                    msg_role = item.get("role", "user")
+                    content = item.get("content", "")
+                    if isinstance(content, list):
+                        converted_parts = []
+                        for part in content:
+                            part_type = part.get("type", "")
+                            if part_type in ("input_text", "output_text", "text"):
+                                converted_parts.append({"type": "text", "text": part.get("text", "")})
+                            else:
+                                logging.debug(f"Skipping content part type in message: {part_type}")
+                        if converted_parts:
+                            raw_messages.append({"role": msg_role, "content": converted_parts})
+                    else:
+                        raw_messages.append({"role": msg_role, "content": content})
+
+        # Second pass: merge consecutive function_call items into single assistant messages
+        for msg in raw_messages:
+            if "_type" in msg and msg["_type"] == "function_call":
+                # Check if last message is already an assistant with tool_calls
+                if messages and messages[-1].get("role") == "assistant" and "tool_calls" in messages[-1]:
+                    messages[-1]["tool_calls"].append(msg["tool_call"])
+                else:
+                    messages.append({
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [msg["tool_call"]]
+                    })
+            else:
+                messages.append(msg)
+
+    return messages
+
+
+def convert_responses_tools(tools):
+    """Convert Responses API tools to chat/completions tools format."""
+    if not tools:
+        return None
+    converted = []
+    for tool in tools:
+        tool_type = tool.get("type", "")
+        if tool_type == "function":
+            converted.append({
+                "type": "function",
+                "function": {
+                    "name": tool.get("name", ""),
+                    "description": tool.get("description", ""),
+                    "parameters": tool.get("parameters", {})
+                }
+            })
+    return converted if converted else None
+
+
+def build_responses_api_response(completion_response, model, resp_id):
+    """Convert a chat/completions response to Responses API format."""
+    created_at = int(time.time())
+    output = []
+
+    if "choices" in completion_response and completion_response["choices"]:
+        choice = completion_response["choices"][0]
+        message = choice.get("message", {})
+
+        # Handle tool calls
+        tool_calls = message.get("tool_calls", [])
+        if tool_calls:
+            for tc in tool_calls:
+                output.append({
+                    "id": tc.get("id", _gen_item_id()),
+                    "type": "function_call",
+                    "status": "completed",
+                    "name": tc["function"]["name"],
+                    "arguments": tc["function"]["arguments"],
+                    "call_id": tc.get("id", _gen_item_id())
+                })
+
+        # Handle text content
+        content = message.get("content")
+        if content:
+            output.append({
+                "id": _gen_msg_id(),
+                "type": "message",
+                "status": "completed",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": content, "annotations": []}]
+            })
+
+    usage_data = completion_response.get("usage", {})
+    usage = {
+        "input_tokens": usage_data.get("prompt_tokens", 0),
+        "output_tokens": usage_data.get("completion_tokens", 0),
+        "total_tokens": usage_data.get("total_tokens", 0)
+    }
+
+    return {
+        "id": resp_id,
+        "object": "response",
+        "created_at": created_at,
+        "status": "completed",
+        "model": model,
+        "output": output,
+        "usage": usage
+    }
+
+
+def generate_responses_streaming(endpoint_url, headers, chat_payload, model, subaccount_name):
+    """Stream chat/completions and convert to Responses API SSE events."""
+    resp_id = _gen_resp_id()
+    msg_id = _gen_msg_id()
+    created_at = int(time.time())
+    sequence_number = 0
+
+    # Build the base response object
+    base_response = {
+        "id": resp_id,
+        "object": "response",
+        "created_at": created_at,
+        "status": "in_progress",
+        "model": model,
+        "output": [],
+        "usage": None
+    }
+
+    def emit_event(event_type, data):
+        nonlocal sequence_number
+        if isinstance(data, dict):
+            data["sequence_number"] = sequence_number
+        sequence_number += 1
+        return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+
+    # Emit initial lifecycle events
+    yield emit_event("response.created", {
+        "type": "response.created",
+        "response": base_response.copy()
+    })
+    yield emit_event("response.in_progress", {
+        "type": "response.in_progress",
+        "response": base_response.copy()
+    })
+
+    # Defer message/content_part events until we know there's text
+    message_item = {
+        "id": msg_id,
+        "type": "message",
+        "status": "in_progress",
+        "role": "assistant",
+        "content": []
+    }
+    message_emitted = False
+
+    # Now stream from backend
+    full_text = ""
+    function_calls = {}  # id -> {name, arguments}
+    input_tokens = 0
+    output_tokens = 0
+
+    try:
+        chat_payload["stream"] = True
+        # Remove fields not supported by SAP AI Core backend
+        for key in list(chat_payload.keys()):
+            if key not in ("model", "messages", "stream", "temperature", "top_p",
+                           "max_tokens", "tools", "tool_choice", "n", "stop",
+                           "presence_penalty", "frequency_penalty"):
+                del chat_payload[key]
+        response = _http_session.post(
+            endpoint_url, headers=headers, json=chat_payload,
+            stream=True, timeout=300
+        )
+        if response.status_code != 200:
+            error_body = response.text
+            logging.error(f"Backend returned {response.status_code}: {error_body}")
+            yield emit_event("error", {
+                "type": "error",
+                "message": f"Backend error {response.status_code}: {error_body}"
+            })
+            return
+
+        for line in response.iter_lines(decode_unicode=True):
+            if not line:
+                continue
+            if not line.startswith("data: "):
+                logging.debug(f"Responses streaming: skipping non-data line: {line[:100]}")
+                continue
+            data_str = line[6:]
+            if data_str.strip() == "[DONE]":
+                logging.debug("Responses streaming: received [DONE]")
+                break
+            try:
+                chunk = json.loads(data_str)
+            except (json.JSONDecodeError, ValueError):
+                continue
+
+            choices = chunk.get("choices", [])
+            if not choices:
+                # Check for usage-only chunk (sent after choices are done)
+                usage = chunk.get("usage")
+                if usage:
+                    input_tokens = usage.get("prompt_tokens", input_tokens)
+                    output_tokens = usage.get("completion_tokens", output_tokens)
+                continue
+            delta = choices[0].get("delta", {})
+
+            # Handle text content deltas
+            content = delta.get("content")
+            if content:
+                if not message_emitted:
+                    yield emit_event("response.output_item.added", {
+                        "type": "response.output_item.added",
+                        "response_id": resp_id,
+                        "output_index": 0,
+                        "item": message_item
+                    })
+                    yield emit_event("response.content_part.added", {
+                        "type": "response.content_part.added",
+                        "response_id": resp_id,
+                        "item_id": msg_id,
+                        "output_index": 0,
+                        "content_index": 0,
+                        "part": {"type": "output_text", "text": "", "annotations": []}
+                    })
+                    message_emitted = True
+                full_text += content
+                yield emit_event("response.output_text.delta", {
+                    "type": "response.output_text.delta",
+                    "response_id": resp_id,
+                    "item_id": msg_id,
+                    "output_index": 0,
+                    "content_index": 0,
+                    "delta": content
+                })
+
+            # Handle tool call deltas
+            tool_calls = delta.get("tool_calls", [])
+            for tc in tool_calls:
+                tc_index = tc.get("index", 0)
+                tc_id = tc.get("id")
+                func = tc.get("function", {})
+
+                if tc_id:
+                    function_calls[tc_index] = {
+                        "id": tc_id,
+                        "name": func.get("name", ""),
+                        "arguments": ""
+                    }
+                    fc_output_index = (1 if message_emitted else 0) + tc_index
+                    yield emit_event("response.output_item.added", {
+                        "type": "response.output_item.added",
+                        "response_id": resp_id,
+                        "output_index": fc_output_index,
+                        "item": {
+                            "id": tc_id,
+                            "type": "function_call",
+                            "status": "in_progress",
+                            "name": func.get("name", ""),
+                            "arguments": "",
+                            "call_id": tc_id
+                        }
+                    })
+
+                if tc_index in function_calls:
+                    arg_delta = func.get("arguments", "")
+                    if arg_delta:
+                        function_calls[tc_index]["arguments"] += arg_delta
+                        yield emit_event("response.function_call_arguments.delta", {
+                            "type": "response.function_call_arguments.delta",
+                            "response_id": resp_id,
+                            "item_id": function_calls[tc_index]["id"],
+                            "output_index": (1 if message_emitted else 0) + tc_index,
+                            "delta": arg_delta
+                        })
+
+            # Extract usage if present
+            usage = chunk.get("usage")
+            if usage:
+                input_tokens = usage.get("prompt_tokens", input_tokens)
+                output_tokens = usage.get("completion_tokens", output_tokens)
+
+        response.close()
+
+    except Exception as e:
+        logging.error(f"Error streaming responses API: {e}", exc_info=True)
+        # Don't return - fall through to emit done/completed events
+        # so the client sees a proper stream termination
+
+    # Emit done events for text content
+    if full_text:
+        yield emit_event("response.output_text.done", {
+            "type": "response.output_text.done",
+            "response_id": resp_id,
+            "item_id": msg_id,
+            "output_index": 0,
+            "content_index": 0,
+            "text": full_text
+        })
+
+        yield emit_event("response.content_part.done", {
+            "type": "response.content_part.done",
+            "response_id": resp_id,
+            "item_id": msg_id,
+            "output_index": 0,
+            "content_index": 0,
+            "part": {"type": "output_text", "text": full_text, "annotations": []}
+        })
+
+        message_item["content"] = [{"type": "output_text", "text": full_text, "annotations": []}]
+        message_item["status"] = "completed"
+        yield emit_event("response.output_item.done", {
+            "type": "response.output_item.done",
+            "response_id": resp_id,
+            "output_index": 0,
+            "item": message_item
+        })
+
+    # Emit done events for function calls
+    output_items = []
+    if full_text:
+        output_items.append(message_item)
+
+    for tc_index in sorted(function_calls.keys()):
+        tc = function_calls[tc_index]
+        fc_item = {
+            "id": tc["id"],
+            "type": "function_call",
+            "status": "completed",
+            "name": tc["name"],
+            "arguments": tc["arguments"],
+            "call_id": tc["id"]
+        }
+        output_items.append(fc_item)
+
+        yield emit_event("response.function_call_arguments.done", {
+            "type": "response.function_call_arguments.done",
+            "response_id": resp_id,
+            "item_id": tc["id"],
+            "output_index": len(output_items) - 1,
+            "arguments": tc["arguments"]
+        })
+
+        yield emit_event("response.output_item.done", {
+            "type": "response.output_item.done",
+            "response_id": resp_id,
+            "output_index": len(output_items) - 1,
+            "item": fc_item
+        })
+
+    # Emit response.completed
+    completed_response = {
+        "id": resp_id,
+        "object": "response",
+        "created_at": created_at,
+        "status": "completed",
+        "model": model,
+        "output": output_items,
+        "usage": {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens
+        }
+    }
+    logging.info(f"Responses streaming: emitting response.completed for {resp_id}")
+    yield emit_event("response.completed", {
+        "type": "response.completed",
+        "response": completed_response
+    })
+
+
+@app.route('/v1/responses', methods=['POST'])
+def proxy_responses_request():
+    """Handler for OpenAI Responses API endpoint."""
+    logging.info("Received request to /v1/responses")
+    logging.debug(f"Request headers: {request.headers}")
+    logging.debug(f"Request body:\n{json.dumps(request.get_json(), indent=4)}")
+
+    if not verify_request_token(request):
+        logging.info("Unauthorized request received. Token verification failed.")
+        return jsonify({"error": "Unauthorized"}), 401
+
+    payload = request.json
+    model = payload.get("model")
+    if not model:
+        logging.warning("No model specified in /v1/responses request, using default")
+        model = "gpt-5.4"
+
+    if model not in proxy_config.model_to_subaccounts:
+        logging.warning(f"Model '{model}' not found, falling back to default")
+        model = "gpt-5.4"
+        if model not in proxy_config.model_to_subaccounts:
+            return jsonify({"error": {"type": "invalid_request_error", "message": f"Model '{model}' not available"}}), 404
+
+    is_stream = payload.get("stream", False)
+    logging.info(f"Responses API - Model: {model}, Streaming: {is_stream}")
+
+    # Convert Responses API format to chat/completions format
+    messages = convert_responses_input_to_messages(payload)
+    chat_payload = {
+        "model": model,
+        "messages": messages,
+        "stream": is_stream
+    }
+
+    # Copy over compatible parameters
+    if "temperature" in payload:
+        chat_payload["temperature"] = payload["temperature"]
+    if "top_p" in payload:
+        chat_payload["top_p"] = payload["top_p"]
+    if "max_output_tokens" in payload:
+        chat_payload["max_tokens"] = payload["max_output_tokens"]
+
+    # Convert tools
+    tools = convert_responses_tools(payload.get("tools"))
+    if tools:
+        chat_payload["tools"] = tools
+        tool_choice = payload.get("tool_choice", "auto")
+        chat_payload["tool_choice"] = tool_choice
+
+    try:
+        if is_claude_model(model):
+            endpoint_url, modified_payload, subaccount_name = handle_claude_request(chat_payload, model)
+        elif is_gemini_model(model):
+            endpoint_url, modified_payload, subaccount_name = handle_gemini_request(chat_payload, model)
+        else:
+            endpoint_url, modified_payload, subaccount_name = handle_default_request(chat_payload, model)
+
+        subaccount_token = fetch_token(subaccount_name)
+        resource_group = proxy_config.subaccounts[subaccount_name].resource_group
+        service_key = proxy_config.subaccounts[subaccount_name].service_key
+
+        headers = {
+            "AI-Resource-Group": resource_group,
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {subaccount_token}",
+            "AI-Tenant-Id": service_key.identityzoneid
+        }
+
+        logging.info(f"Forwarding /v1/responses request to {endpoint_url} with subAccount '{subaccount_name}'")
+
+        if not is_stream:
+            # Non-streaming: forward, get response, convert to Responses format
+            # Clean payload of unsupported fields
+            for key in list(modified_payload.keys()):
+                if key not in ("model", "messages", "stream", "temperature", "top_p",
+                               "max_tokens", "tools", "tool_choice", "n", "stop",
+                               "presence_penalty", "frequency_penalty"):
+                    del modified_payload[key]
+            resp = _http_session.post(endpoint_url, headers=headers, json=modified_payload, timeout=300)
+            if resp.status_code != 200:
+                error_body = resp.text
+                logging.error(f"Backend returned {resp.status_code} for /v1/responses: {error_body}")
+                return jsonify({"error": {"type": "server_error", "message": f"Backend error: {error_body}"}}), resp.status_code
+            completion = resp.json()
+            resp_id = _gen_resp_id()
+            response_data = build_responses_api_response(completion, model, resp_id)
+            return jsonify(response_data), 200
+
+        # Streaming
+        return Response(
+            stream_with_context(generate_responses_streaming(
+                endpoint_url, headers, modified_payload, model, subaccount_name
+            )),
+            content_type='text/event-stream',
+            headers={
+                'Cache-Control': 'no-cache',
+                'Connection': 'keep-alive',
+                'X-Accel-Buffering': 'no',
+            }
+        )
+
+    except ValueError as err:
+        logging.error(f"Value error in /v1/responses: {err}")
+        return jsonify({"error": {"type": "invalid_request_error", "message": str(err)}}), 400
+
+    except Exception as err:
+        logging.error(f"Unexpected error in /v1/responses: {err}", exc_info=True)
+        return jsonify({"error": {"type": "server_error", "message": str(err)}}), 500
 
 
 @app.route('/v1/messages', methods=['POST'])

@@ -36,9 +36,10 @@ After you run the proxy server, you will get
 - API key will be one of secret_authentication_tokens. 
 - Model ID: models you configured in the `deployment_models`
 
-So two major end point
-- OpenAI Compatible API: http://127.0.0.1:3001/v1/chat/completion
-- Anthrophic Claude Sonnet API: http://127.0.0.1:3001/v1/messages
+So three major end points
+- OpenAI Compatible API: http://127.0.0.1:3001/v1/chat/completions
+- OpenAI Responses API: http://127.0.0.1:3001/v1/responses
+- Anthropic Claude Messages API: http://127.0.0.1:3001/v1/messages
 
 
 You can check the models list
@@ -101,6 +102,7 @@ Default fallback models:
 - **Load Balance**: Support the load balancing across multiple subAccounts and deployments.
 - **Multi-subAccount Support**: Distribute requests across multiple SAP AI Core subAccounts.
 - **Model Management**: List available models and handle model-specific requests.
+- **OpenAI Responses API**: Full support for the `/v1/responses` endpoint (used by OpenAI Codex CLI and other modern clients).
 - **OpenAI Embeddings API**: Support for text embedding functionality through the `/v1/embeddings` endpoint.
 - **Debug Mode**: Enhanced logging capabilities with `--debug` command line flag for detailed troubleshooting.
 
@@ -327,11 +329,11 @@ vim  ~/.codex/config.toml
 Update the config.toml
 ```toml
 model_provider="sapaicore"
-model="gpt-5"
+model="gpt-5.4"
 
 [model_providers.sapaicore]
 name="SAP AI Core"
-wire_api="chat"            
+wire_api="responses"            
 base_url="http://127.0.0.1:3001/v1"  
 env_key="OPENAI_API_KEY"    
 ```
