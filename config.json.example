@@ -15,6 +15,12 @@
                 ],
                 "gpt-o3-mini": [
                     "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/<deployment_id_5>"
+                ],
+                "llama3.1-70b": [
+                    "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/<deployment_id_llama>"
+                ],
+                "mistralai--mistral-large-instruct": [
+                    "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/<deployment_id_mistral>"
                 ]
             }
         },
@@ -33,6 +39,12 @@
                 ],
                 "gpt-o3-mini": [
                     "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/<deployment_id_9>"
+                ],
+                "llama3.1-70b": [
+                    "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/<deployment_id_llama2>"
+                ],
+                "mistralai--mistral-large-instruct": [
+                    "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/<deployment_id_mistral2>"
                 ]
             }
         }
