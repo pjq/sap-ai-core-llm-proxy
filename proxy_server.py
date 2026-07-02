@@ -3041,11 +3041,36 @@ def proxy_claude_request():
 
         # Prepare the request body for Bedrock
         body = request_json.copy()
-        
+
         # Remove model and stream from body as they're handled separately
         body.pop("model", None)
         body.pop("stream", None)
-        
+
+        # Extract system messages from messages array into top-level "system" parameter.
+        # Bedrock's Anthropic API does NOT support "role": "system" inside messages —
+        # it requires system prompts as a top-level "system" parameter.
+        if "messages" in body:
+            system_messages = [m for m in body["messages"] if m.get("role") == "system"]
+            if system_messages:
+                body["messages"] = [m for m in body["messages"] if m.get("role") != "system"]
+                # Collect system content (may be string or list of content blocks)
+                system_parts = []
+                for sm in system_messages:
+                    content = sm.get("content", "")
+                    if isinstance(content, str):
+                        system_parts.append({"type": "text", "text": content})
+                    elif isinstance(content, list):
+                        system_parts.extend(content)
+                # Merge with any existing top-level system parameter
+                existing_system = body.get("system")
+                if existing_system is not None:
+                    if isinstance(existing_system, str):
+                        system_parts.insert(0, {"type": "text", "text": existing_system})
+                    elif isinstance(existing_system, list):
+                        system_parts = existing_system + system_parts
+                body["system"] = system_parts
+                logging.info("Extracted %d system message(s) from messages array into top-level 'system' parameter", len(system_messages))
+
         # Add required anthropic_version for Bedrock
         body["anthropic_version"] = "bedrock-2023-05-31"
 
