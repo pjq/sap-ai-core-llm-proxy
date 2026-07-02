@@ -964,7 +964,7 @@ def convert_claude_to_openai(response, model):
     logging.info(f"Using standard Claude conversion for model '{model}'.")
 
     try:
-        logging.info(f"Raw response from Claude API: {json.dumps(response, indent=4)}")
+        logging.debug(f"Raw response from Claude API: {json.dumps(response, indent=4)}")
 
         # Ensure the response contains the expected structure
         if "content" not in response or not isinstance(response["content"], list):
@@ -1135,7 +1135,7 @@ def convert_claude_chunk_to_openai(chunk, model):
     try:
         # Log the raw chunk received
         # Log the raw chunk received only if it's a 3.7 model
-        logging.info(f"{model} Raw Claude chunk received: {chunk}")
+        logging.debug(f"{model} Raw Claude chunk received: {chunk}")
         # Parse the Claude chunk
         data = json.loads(chunk.replace("data: ", "").strip())
         
@@ -1206,9 +1206,9 @@ def convert_claude37_chunk_to_openai(claude_chunk, model_name):
         if isinstance(claude_chunk, str):
             try:
                 # claude_chunk = json.dumps(claude_chunk.replace("data: ", "").strip())
-                logging.info(f"Parsed Claude chunk: {claude_chunk}")
+                logging.debug(f"Parsed Claude chunk: {claude_chunk}")
                 claude_chunk = json.loads(claude_chunk)
-                logging.info(f"Decoded Claude chunk: {json.dumps(claude_chunk, indent=2)}")
+                logging.debug(f"Decoded Claude chunk: {json.dumps(claude_chunk, indent=2)}")
             except json.JSONDecodeError as e:
                 logging.error(f"JSON decode error: {e}")
                 return None
@@ -1798,16 +1798,16 @@ def convert_gemini_chunk_to_openai(gemini_chunk, model_name):
             
             if parts and "text" in parts[0]:
                 text_delta = parts[0]["text"]
-                logging.info(f"Gemini text delta: {text_delta}")
+                logging.debug(f"Gemini text delta: {text_delta}")
                 openai_chunk_payload["choices"][0]["delta"]["content"] = text_delta
         else:
             # Extract content delta
             content = first_candidate.get("content", {})
             parts = content.get("parts", [])
-            
+
             if parts and "text" in parts[0]:
                 text_delta = parts[0]["text"]
-                logging.info(f"Gemini text delta: {text_delta}")
+                logging.debug(f"Gemini text delta: {text_delta}")
                 openai_chunk_payload["choices"][0]["delta"]["content"] = text_delta
 
         # Format as SSE string
@@ -2031,8 +2031,8 @@ def handle_default_request(payload, model="gpt-4o"):
 @app.route('/v1/chat/completions', methods=['OPTIONS'])
 def proxy_openai_stream2():
     logging.info("OPTIONS:Received request to /v1/chat/completions")
-    logging.info(f"Request headers: {request.headers}")
-    logging.info(f"Request payload as string: {request.data.decode('utf-8')}")
+    logging.debug(f"Request headers: {request.headers}")
+    logging.debug(f"Request payload as string: {request.data.decode('utf-8')}")
     return jsonify({
         "id": "gen-1747041021-KLZff2aBrJPmV6L1bZf1",
         "provider": "OpenAI",
@@ -3128,8 +3128,8 @@ def proxy_claude_request():
         # Remove output_config which is not supported by AWS Bedrock
         if "output_config" in body:
             output_config = body.pop("output_config")
-            logging.info(f"[{request_id}] Removed unsupported output_config field from request: {json.dumps(output_config)}")
-            logging.info(f"[{request_id}] Note: AWS Bedrock doesn't support output_config/json_schema format constraints")
+            logging.debug(f"[{request_id}] Removed unsupported output_config field from request: {json.dumps(output_config)}")
+            logging.debug(f"[{request_id}] Note: AWS Bedrock doesn't support output_config/json_schema format constraints")
 
         # Convert body to JSON string for Bedrock API
         body_json = json.dumps(body)
@@ -3140,7 +3140,7 @@ def proxy_claude_request():
             pretty_body_json = json.dumps(json.loads(body_json), indent=2, ensure_ascii=False)
         except Exception:
             pretty_body_json = body_json
-        logging.info("Request body for Bedrock (pretty):\n%s", pretty_body_json)
+        logging.debug("Request body for Bedrock (pretty):\n%s", pretty_body_json)
 
         if stream:
             # Extract user info for logging (before generator context)
@@ -3252,7 +3252,7 @@ def proxy_claude_request():
                     prompt_tokens = usage.get("input_tokens", 0)
                     completion_tokens = usage.get("output_tokens", 0)
                     total_tokens = prompt_tokens + completion_tokens
-                    logging.info(f"[{request_id}] Non-streaming token usage - prompt={prompt_tokens}, completion={completion_tokens}, total={total_tokens}")
+                    logging.debug(f"[{request_id}] Non-streaming token usage - prompt={prompt_tokens}, completion={completion_tokens}, total={total_tokens}")
 
                     # Calculate request duration
                     duration_ms = int((time.time() - start_time) * 1000)
@@ -3374,7 +3374,7 @@ def proxy_claude_request_original():
 
             
             # Log the response for debug purposes
-            logging.info(f"Final response to client: {json.dumps(final_response, indent=2)}")
+            logging.debug(f"Final response to client: {json.dumps(final_response, indent=2)}")
 
 
             return jsonify(final_response), backend_response.status_code
@@ -3419,8 +3419,8 @@ def handle_non_streaming_request(url, headers, payload, model, subaccount_name):
 
     try:
         # Log the raw request body and payload being forwarded
-        logging.info(f"[{request_id}] Raw request received (non-streaming): {json.dumps(request.json, indent=2)}")
-        logging.info(f"[{request_id}] Forwarding payload to API (non-streaming): {json.dumps(payload, indent=2)}")
+        logging.debug(f"[{request_id}] Raw request received (non-streaming): {json.dumps(request.json, indent=2)}")
+        logging.debug(f"[{request_id}] Forwarding payload to API (non-streaming): {json.dumps(payload, indent=2)}")
 
         # Make request to backend API using session
         response = _http_session.post(url, headers=headers, json=payload, timeout=600)
@@ -3511,8 +3511,8 @@ def generate_streaming_response(url, headers, payload, model, subaccount_name):
     ip_address = request.remote_addr or request.headers.get("X-Forwarded-For", "unknown")
 
     # Log the raw request body and payload being forwarded
-    logging.info(f"[{request_id}] Raw request received (streaming): {json.dumps(request.json, indent=2)}")
-    logging.info(f"[{request_id}] Forwarding payload to API (streaming): {json.dumps(payload, indent=2)}")
+    logging.debug(f"[{request_id}] Raw request received (streaming): {json.dumps(request.json, indent=2)}")
+    logging.debug(f"[{request_id}] Forwarding payload to API (streaming): {json.dumps(payload, indent=2)}")
 
     buffer = ""
     total_tokens = 0
@@ -3578,38 +3578,38 @@ def generate_streaming_response(url, headers, payload, model, subaccount_name):
                 for line_bytes in response.iter_lines():
                     if line_bytes:
                         line = line_bytes.decode('utf-8')
-                        logging.info(f"Gemini raw line received: {line}")
-                        
+                        logging.debug(f"Gemini raw line received: {line}")
+
                         # Process Gemini streaming lines
                         line_content = ""
                         if line.startswith("data: "):
                             line_content = line.replace("data: ", "").strip()
-                            logging.info(f"Gemini data line content: {line_content}")
+                            logging.debug(f"Gemini data line content: {line_content}")
                         elif line.strip():
                             # Handle lines without "" prefix
                             line_content = line.strip()
-                            logging.info(f"Gemini line content (no prefix): {line_content}")
-                        
+                            logging.debug(f"Gemini line content (no prefix): {line_content}")
+
                         if line_content and line_content != "[DONE]":
                             try:
                                 gemini_chunk = json.loads(line_content)
-                                logging.info(f"Gemini parsed chunk: {json.dumps(gemini_chunk, indent=2)}")
-                                
+                                logging.debug(f"Gemini parsed chunk: {json.dumps(gemini_chunk, indent=2)}")
+
                                 # Convert chunk to OpenAI format
                                 openai_sse_chunk_str = convert_gemini_chunk_to_openai(gemini_chunk, model)
                                 if openai_sse_chunk_str:
-                                    logging.info(f"Gemini converted to OpenAI chunk: {openai_sse_chunk_str}")
+                                    logging.debug(f"Gemini converted to OpenAI chunk: {openai_sse_chunk_str}")
                                     yield openai_sse_chunk_str
                                 else:
-                                    logging.info(f"Gemini chunk conversion returned None")
-                                
+                                    logging.debug(f"Gemini chunk conversion returned None")
+
                                 # Extract token usage from usageMetadata if available
                                 if "usageMetadata" in gemini_chunk:
                                     usage_metadata = gemini_chunk["usageMetadata"]
                                     total_tokens = usage_metadata.get("totalTokenCount", 0)
                                     prompt_tokens = usage_metadata.get("promptTokenCount", 0)
                                     completion_tokens = usage_metadata.get("candidatesTokenCount", 0)
-                                    logging.info(f"Gemini token usage: prompt={prompt_tokens}, completion={completion_tokens}, total={total_tokens}")
+                                    logging.debug(f"Gemini token usage: prompt={prompt_tokens}, completion={completion_tokens}, total={total_tokens}")
                                     
                             except json.JSONDecodeError as e:
                                 logging.error(f"Error parsing Gemini chunk from '{subaccount_name}': {e}")
