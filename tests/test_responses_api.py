@@ -3,6 +3,8 @@ import json
 import time
 from unittest.mock import patch, MagicMock
 
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 from proxy_server import (
     convert_responses_input_to_messages,
     convert_responses_tools,
