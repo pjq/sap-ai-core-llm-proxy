@@ -108,6 +108,28 @@ class ProxyConfig:
 # Global configuration
 proxy_config = ProxyConfig()
 
+
+class _LazyJSON:
+    """Defer json.dumps until the log record is actually formatted.
+
+    Passed as a %-style logging arg, its __str__ runs only when the record
+    passes the level filter and is emitted. This keeps expensive pretty-print
+    serialization of request/response payloads out of the hot path when DEBUG
+    logging is disabled (the common production case).
+    """
+    __slots__ = ("obj", "kwargs")
+
+    def __init__(self, obj, **kwargs):
+        self.obj = obj
+        self.kwargs = kwargs
+
+    def __str__(self):
+        try:
+            return json.dumps(self.obj, **self.kwargs)
+        except Exception:
+            return repr(self.obj)
+
+
 # ------------------------
 # HTTP Session with Connection Pool Management
 # ------------------------
@@ -509,7 +531,7 @@ def convert_openai_to_claude37(payload):
     Converts an OpenAI API request payload to the format expected by the
     Claude 3.7 /converse endpoint.
     """
-    logging.debug(f"Original OpenAI payload for Claude 3.7 conversion: {json.dumps(payload, indent=2)}")
+    logging.debug("Original OpenAI payload for Claude 3.7 conversion: %s", _LazyJSON(payload, indent=2))
 
     # Extract system message if present
     system_message = ""
@@ -636,13 +658,13 @@ def convert_openai_to_claude37(payload):
         # Claude /converse API supports a top-level system prompt as a list of blocks
         # claude_payload["system"] = [{"text": system_message}]
 
-    logging.debug(f"Converted Claude 3.7 payload: {json.dumps(claude_payload, indent=2)}")
+    logging.debug("Converted Claude 3.7 payload: %s", _LazyJSON(claude_payload, indent=2))
     return claude_payload
 
 
 def convert_claude_request_to_openai(payload):
     """Converts a Claude Messages API request to an OpenAI Chat Completion request."""
-    logging.debug(f"Original Claude payload for OpenAI conversion: {json.dumps(payload, indent=2)}")
+    logging.debug("Original Claude payload for OpenAI conversion: %s", _LazyJSON(payload, indent=2))
 
     openai_messages = []
     if "system" in payload and payload["system"]:
@@ -677,13 +699,13 @@ def convert_claude_request_to_openai(payload):
         openai_payload["tools"] = openai_tools
         logging.debug(f"Converted {len(openai_tools)} tools for OpenAI format")
 
-    logging.debug(f"Converted OpenAI payload: {json.dumps(openai_payload, indent=2)}")
+    logging.debug("Converted OpenAI payload: %s", _LazyJSON(openai_payload, indent=2))
     return openai_payload
 
 
 def convert_claude_request_to_gemini(payload):
     """Converts a Claude Messages API request to a Google Gemini request."""
-    logging.debug(f"Original Claude payload for Gemini conversion: {json.dumps(payload, indent=2)}")
+    logging.debug("Original Claude payload for Gemini conversion: %s", _LazyJSON(payload, indent=2))
 
     gemini_contents = []
     system_prompt = payload.get("system", "")
@@ -743,7 +765,7 @@ def convert_claude_request_to_gemini(payload):
         gemini_payload["tools"] = gemini_tools
         logging.debug(f"Converted {len(gemini_tools)} tools for Gemini format")
 
-    logging.debug(f"Converted Gemini payload: {json.dumps(gemini_payload, indent=2)}")
+    logging.debug("Converted Gemini payload: %s", _LazyJSON(gemini_payload, indent=2))
     return gemini_payload
 
 
@@ -752,7 +774,7 @@ def convert_claude_request_for_bedrock(payload):
     Converts a Claude Messages API request to Bedrock Claude format.
     Handles tools conversion for Bedrock compatibility.
     """
-    logging.debug(f"Original Claude payload for Bedrock conversion: {json.dumps(payload, indent=2)}")
+    logging.debug("Original Claude payload for Bedrock conversion: %s", _LazyJSON(payload, indent=2))
     
     bedrock_payload = {}
     
@@ -803,7 +825,7 @@ def convert_claude_request_for_bedrock(payload):
     if "anthropic_version" not in bedrock_payload:
         bedrock_payload["anthropic_version"] = "bedrock-2023-05-31"
     
-    logging.debug(f"Converted Bedrock Claude payload: {json.dumps(bedrock_payload, indent=2)}")
+    logging.debug("Converted Bedrock Claude payload: %s", _LazyJSON(bedrock_payload, indent=2))
     return bedrock_payload
 
 
@@ -964,7 +986,7 @@ def convert_claude_to_openai(response, model):
     logging.info(f"Using standard Claude conversion for model '{model}'.")
 
     try:
-        logging.debug(f"Raw response from Claude API: {json.dumps(response, indent=4)}")
+        logging.debug("Raw response from Claude API: %s", _LazyJSON(response, indent=4))
 
         # Ensure the response contains the expected structure
         if "content" not in response or not isinstance(response["content"], list):
@@ -996,7 +1018,7 @@ def convert_claude_to_openai(response, model):
                 "total_tokens": response.get("usage", {}).get("input_tokens", 0) + response.get("usage", {}).get("output_tokens", 0)
             }
         }
-        logging.debug(f"Converted response to OpenAI format: {json.dumps(openai_response, indent=4)}")
+        logging.debug("Converted response to OpenAI format: %s", _LazyJSON(openai_response, indent=4))
         return openai_response
     except Exception as e:
         logging.error(f"Error converting Claude response to OpenAI format: {e}")
@@ -1011,7 +1033,7 @@ def convert_claude37_to_openai(response, model_name="claude-3.7"):
     to the format expected by the OpenAI Chat Completion API.
     """
     try:
-        logging.debug(f"Raw response from Claude API: {json.dumps(response, indent=2)}")
+        logging.debug("Raw response from Claude API: %s", _LazyJSON(response, indent=2))
 
         # Validate the overall response structure
         if not isinstance(response, dict):
@@ -1108,7 +1130,7 @@ def convert_claude37_to_openai(response, model_name="claude-3.7"):
             }
             # "system_fingerprint": None # Not available from Claude /converse
         }
-        logging.debug(f"Converted response to OpenAI format: {json.dumps(openai_response, indent=2)}")
+        logging.debug("Converted response to OpenAI format: %s", _LazyJSON(openai_response, indent=2))
         return openai_response
 
     except Exception as e:
@@ -1208,7 +1230,7 @@ def convert_claude37_chunk_to_openai(claude_chunk, model_name):
                 # claude_chunk = json.dumps(claude_chunk.replace("data: ", "").strip())
                 logging.debug(f"Parsed Claude chunk: {claude_chunk}")
                 claude_chunk = json.loads(claude_chunk)
-                logging.debug(f"Decoded Claude chunk: {json.dumps(claude_chunk, indent=2)}")
+                logging.debug("Decoded Claude chunk: %s", _LazyJSON(claude_chunk, indent=2))
             except json.JSONDecodeError as e:
                 logging.error(f"JSON decode error: {e}")
                 return None
@@ -1451,7 +1473,7 @@ def convert_openai_to_gemini(payload):
     # Add safety settings
     gemini_payload["safety_settings"] = safety_settings
 
-    logging.debug(f"Converted Gemini payload: {json.dumps(gemini_payload, indent=2)}")
+    logging.debug("Converted Gemini payload: %s", _LazyJSON(gemini_payload, indent=2))
     return gemini_payload
 
 def convert_gemini_to_openai(response, model_name="gemini-pro"):
@@ -1460,7 +1482,7 @@ def convert_gemini_to_openai(response, model_name="gemini-pro"):
     to the format expected by the OpenAI Chat Completion API.
     """
     try:
-        logging.debug(f"Raw response from Gemini API: {json.dumps(response, indent=2)}")
+        logging.debug("Raw response from Gemini API: %s", _LazyJSON(response, indent=2))
 
         # Validate the overall response structure
         if not isinstance(response, dict):
@@ -1533,7 +1555,7 @@ def convert_gemini_to_openai(response, model_name="gemini-pro"):
             }
         }
         
-        logging.debug(f"Converted response to OpenAI format: {json.dumps(openai_response, indent=2)}")
+        logging.debug("Converted response to OpenAI format: %s", _LazyJSON(openai_response, indent=2))
         return openai_response
 
     except Exception as e:
@@ -1554,7 +1576,7 @@ def convert_gemini_response_to_claude(response, model_name="gemini-pro"):
     to the format expected by the Anthropic Claude Messages API.
     """
     try:
-        logging.debug(f"Raw response from Gemini API for Claude conversion: {json.dumps(response, indent=2)}")
+        logging.debug("Raw response from Gemini API for Claude conversion: %s", _LazyJSON(response, indent=2))
 
         if not isinstance(response, dict) or "candidates" not in response or not response["candidates"]:
             raise ValueError("Invalid Gemini response: 'candidates' field is missing or empty")
@@ -1594,7 +1616,7 @@ def convert_gemini_response_to_claude(response, model_name="gemini-pro"):
                 "output_tokens": completion_tokens
             }
         }
-        logging.debug(f"Converted Gemini response to Claude format: {json.dumps(claude_response, indent=2)}")
+        logging.debug("Converted Gemini response to Claude format: %s", _LazyJSON(claude_response, indent=2))
         return claude_response
 
     except Exception as e:
@@ -1614,7 +1636,7 @@ def convert_openai_response_to_claude(response):
     to the format expected by the Anthropic Claude Messages API.
     """
     try:
-        logging.debug(f"Raw response from OpenAI API for Claude conversion: {json.dumps(response, indent=2)}")
+        logging.debug("Raw response from OpenAI API for Claude conversion: %s", _LazyJSON(response, indent=2))
 
         if not isinstance(response, dict) or "choices" not in response or not response["choices"]:
             raise ValueError("Invalid OpenAI response: 'choices' field is missing or empty")
@@ -1672,7 +1694,7 @@ def convert_openai_response_to_claude(response):
                 "output_tokens": completion_tokens
             }
         }
-        logging.debug(f"Converted OpenAI response to Claude format: {json.dumps(claude_response, indent=2)}")
+        logging.debug("Converted OpenAI response to Claude format: %s", _LazyJSON(claude_response, indent=2))
         return claude_response
 
     except Exception as e:
@@ -1829,64 +1851,73 @@ def convert_gemini_chunk_to_openai(gemini_chunk, model_name):
         }
         return f"data: {json.dumps(error_payload)}\n\n"
 
+# Guards the round-robin counters on load_balance_url. Waitress serves with
+# ~100 threads, and the counter read-modify-write below is not atomic; without
+# this lock concurrent requests lose increments and skew the load balancing.
+_load_balance_lock = threading.Lock()
+
+
 def load_balance_url(model_name: str) -> tuple:
     """
     Load balance requests for a model across all subAccounts that have it deployed.
-    
+
     Args:
         model_name: Name of the model to load balance
-        
+
     Returns:
         Tuple of (selected_url, subaccount_name, resource_group, final_model_name)
-        
+
     Raises:
         ValueError: If no subAccounts have the requested model
     """
     # Initialize counters dictionary if it doesn't exist
     if not hasattr(load_balance_url, "counters"):
         load_balance_url.counters = {}
-    
+
     # Get list of subAccounts that have this model
     if model_name not in proxy_config.model_to_subaccounts or not proxy_config.model_to_subaccounts[model_name]:
         # Model not found, raise error
         logging.error(f"Model '{model_name}' not found in any subAccount")
         raise ValueError(f"Model '{model_name}' not available in any subAccount")
-    
+
     subaccount_names = proxy_config.model_to_subaccounts[model_name]
-    
-    # Create counter for this model if it doesn't exist
-    if model_name not in load_balance_url.counters:
-        load_balance_url.counters[model_name] = 0
-    
-    # Select subAccount using round-robin
-    subaccount_index = load_balance_url.counters[model_name] % len(subaccount_names)
-    selected_subaccount = subaccount_names[subaccount_index]
-    
-    # Increment counter for next request
-    load_balance_url.counters[model_name] += 1
-    
-    # Get the model URL list from the selected subAccount
-    subaccount = proxy_config.subaccounts[selected_subaccount]
-    url_list = subaccount.normalized_models.get(model_name, [])
-    
+
+    # Reserve a round-robin slot atomically. Only the counter bookkeeping is
+    # inside the lock; the (unchanging) config lookups afterward stay outside it.
+    with _load_balance_lock:
+        # Create counter for this model if it doesn't exist
+        if model_name not in load_balance_url.counters:
+            load_balance_url.counters[model_name] = 0
+
+        # Select subAccount using round-robin
+        subaccount_index = load_balance_url.counters[model_name] % len(subaccount_names)
+        selected_subaccount = subaccount_names[subaccount_index]
+
+        # Increment counter for next request
+        load_balance_url.counters[model_name] += 1
+
+        # Reserve the URL slot for the selected subAccount up front so the whole
+        # selection is consistent under concurrency. The URL list length is read
+        # here; if it turns out empty we raise below (outside the lock).
+        subaccount = proxy_config.subaccounts[selected_subaccount]
+        url_list = subaccount.normalized_models.get(model_name, [])
+        url_index = None
+        if url_list:
+            url_counter_key = f"{selected_subaccount}:{model_name}"
+            if url_counter_key not in load_balance_url.counters:
+                load_balance_url.counters[url_counter_key] = 0
+            url_index = load_balance_url.counters[url_counter_key] % len(url_list)
+            load_balance_url.counters[url_counter_key] += 1
+
     if not url_list:
         logging.error(f"Model '{model_name}' listed for subAccount '{selected_subaccount}' but no URLs found")
         raise ValueError(f"Configuration error: No URLs for model '{model_name}' in subAccount '{selected_subaccount}'")
-    
-    # Select URL using round-robin within the subAccount
-    url_counter_key = f"{selected_subaccount}:{model_name}"
-    if url_counter_key not in load_balance_url.counters:
-        load_balance_url.counters[url_counter_key] = 0
-    
-    url_index = load_balance_url.counters[url_counter_key] % len(url_list)
+
     selected_url = url_list[url_index]
-    
-    # Increment URL counter for next request
-    load_balance_url.counters[url_counter_key] += 1
-    
+
     # Get resource group for the selected subAccount
     resource_group = subaccount.resource_group
-    
+
     logging.info(f"Selected subAccount '{selected_subaccount}' and URL '{selected_url}' for model '{model_name}'")
     return selected_url, selected_subaccount, resource_group, model_name
 
@@ -2107,7 +2138,7 @@ def proxy_openai_stream():
     """Main handler for chat completions endpoint with multi-subAccount support."""
     logging.info("Received request to /v1/chat/completions")
     logging.debug(f"Request headers: {request.headers}")
-    logging.debug(f"Request body:\n{json.dumps(request.get_json(), indent=4)}")
+    logging.debug("Request body:\n%s", _LazyJSON(request.get_json(), indent=4))
     
     # Verify client authentication token
     if not verify_request_token(request):
@@ -2775,7 +2806,7 @@ def proxy_responses_request():
     """Handler for OpenAI Responses API endpoint."""
     logging.info("Received request to /v1/responses")
     logging.debug(f"Request headers: {request.headers}")
-    logging.debug(f"Request body:\n{json.dumps(request.get_json(), indent=4)}")
+    logging.debug("Request body:\n%s", _LazyJSON(request.get_json(), indent=4))
 
     if not verify_request_token(request):
         logging.info("Unauthorized request received. Token verification failed.")
@@ -2889,7 +2920,7 @@ def proxy_claude_request():
 
     logging.info(f"[{request_id}] Received request to /v1/messages")
     logging.debug(f"Request headers: {request.headers}")
-    logging.debug(f"Request body:\n{json.dumps(request.get_json(), indent=4)}")
+    logging.debug("Request body:\n%s", _LazyJSON(request.get_json(), indent=4))
 
     # Validate API key using proxy config authentication
     api_key = request.headers.get("X-Api-Key", "")
@@ -3128,19 +3159,14 @@ def proxy_claude_request():
         # Remove output_config which is not supported by AWS Bedrock
         if "output_config" in body:
             output_config = body.pop("output_config")
-            logging.debug(f"[{request_id}] Removed unsupported output_config field from request: {json.dumps(output_config)}")
+            logging.debug("[%s] Removed unsupported output_config field from request: %s", request_id, _LazyJSON(output_config))
             logging.debug(f"[{request_id}] Note: AWS Bedrock doesn't support output_config/json_schema format constraints")
 
         # Convert body to JSON string for Bedrock API
         body_json = json.dumps(body)
-        
-        # logging.debug(f"Request body for Bedrock: {body_json}")
-        # Pretty-print the body JSON for easier debugging
-        try:
-            pretty_body_json = json.dumps(json.loads(body_json), indent=2, ensure_ascii=False)
-        except Exception:
-            pretty_body_json = body_json
-        logging.debug("Request body for Bedrock (pretty):\n%s", pretty_body_json)
+
+        # Pretty-print for debugging only when DEBUG is enabled (lazy).
+        logging.debug("Request body for Bedrock (pretty):\n%s", _LazyJSON(body, indent=2, ensure_ascii=False))
 
         if stream:
             # Extract user info for logging (before generator context)
@@ -3374,7 +3400,7 @@ def proxy_claude_request_original():
 
             
             # Log the response for debug purposes
-            logging.debug(f"Final response to client: {json.dumps(final_response, indent=2)}")
+            logging.debug("Final response to client: %s", _LazyJSON(final_response, indent=2))
 
 
             return jsonify(final_response), backend_response.status_code
@@ -3419,8 +3445,8 @@ def handle_non_streaming_request(url, headers, payload, model, subaccount_name):
 
     try:
         # Log the raw request body and payload being forwarded
-        logging.debug(f"[{request_id}] Raw request received (non-streaming): {json.dumps(request.json, indent=2)}")
-        logging.debug(f"[{request_id}] Forwarding payload to API (non-streaming): {json.dumps(payload, indent=2)}")
+        logging.debug("[%s] Raw request received (non-streaming): %s", request_id, _LazyJSON(request.json, indent=2))
+        logging.debug("[%s] Forwarding payload to API (non-streaming): %s", request_id, _LazyJSON(payload, indent=2))
 
         # Make request to backend API using session
         response = _http_session.post(url, headers=headers, json=payload, timeout=600)
@@ -3511,8 +3537,8 @@ def generate_streaming_response(url, headers, payload, model, subaccount_name):
     ip_address = request.remote_addr or request.headers.get("X-Forwarded-For", "unknown")
 
     # Log the raw request body and payload being forwarded
-    logging.debug(f"[{request_id}] Raw request received (streaming): {json.dumps(request.json, indent=2)}")
-    logging.debug(f"[{request_id}] Forwarding payload to API (streaming): {json.dumps(payload, indent=2)}")
+    logging.debug("[%s] Raw request received (streaming): %s", request_id, _LazyJSON(request.json, indent=2))
+    logging.debug("[%s] Forwarding payload to API (streaming): %s", request_id, _LazyJSON(payload, indent=2))
 
     buffer = ""
     total_tokens = 0
@@ -3521,13 +3547,19 @@ def generate_streaming_response(url, headers, payload, model, subaccount_name):
     claude_metadata = {}  # For Claude 3.7 metadata
     chunk = None  # Initialize chunk variable to avoid reference errors
 
+    # Hoist model-type predicates out of the per-chunk loops below — the model
+    # doesn't change mid-stream, so these substring scans only need to run once.
+    is_claude = is_claude_model(model)
+    is_claude_new = is_claude and is_claude_37_or_4(model)
+    is_gemini = is_gemini_model(model)
+
     # Make streaming request to backend using session
     with _http_session.post(url, headers=headers, json=payload, stream=True, timeout=600) as response:
         try:
             response.raise_for_status()
-            
+
             # --- Claude 3.7/4/4.5/4.6 Streaming Logic ---
-            if is_claude_model(model) and is_claude_37_or_4(model):
+            if is_claude_new:
                 logging.info(f"Using Claude streaming (model: {model}) for subAccount '{subaccount_name}'")
                 for line_bytes in response.iter_lines():
                     if line_bytes:
@@ -3573,7 +3605,7 @@ def generate_streaming_response(url, headers, payload, model, subaccount_name):
                     completion_tokens = claude_metadata["usage"].get("outputTokens", 0)
             
             # --- Gemini Streaming Logic ---
-            elif is_gemini_model(model):
+            elif is_gemini:
                 logging.info(f"Using Gemini streaming for subAccount '{subaccount_name}'")
                 for line_bytes in response.iter_lines():
                     if line_bytes:
@@ -3593,7 +3625,7 @@ def generate_streaming_response(url, headers, payload, model, subaccount_name):
                         if line_content and line_content != "[DONE]":
                             try:
                                 gemini_chunk = json.loads(line_content)
-                                logging.debug(f"Gemini parsed chunk: {json.dumps(gemini_chunk, indent=2)}")
+                                logging.debug("Gemini parsed chunk: %s", _LazyJSON(gemini_chunk, indent=2))
 
                                 # Convert chunk to OpenAI format
                                 openai_sse_chunk_str = convert_gemini_chunk_to_openai(gemini_chunk, model)
@@ -3633,9 +3665,11 @@ def generate_streaming_response(url, headers, payload, model, subaccount_name):
             
             # --- Other Models (including older Claude) ---
             else:
-                for chunk in response.iter_content(chunk_size=128):
+                # 8 KiB chunks instead of 128 B: far fewer iterations/syscalls per
+                # token stream while still flushing promptly to the client.
+                for chunk in response.iter_content(chunk_size=8192):
                     if chunk:
-                        if is_claude_model(model):  # Older Claude
+                        if is_claude:  # Older Claude
                             buffer += chunk.decode('utf-8')
                             while "data: " in buffer:
                                 try:
@@ -3759,7 +3793,7 @@ def generate_claude_streaming_response(url, headers, payload, model, subaccount_
     If the backend is Gemini or OpenAI, it converts their SSE stream to Claude's format.
     """
     logging.info(f"Starting Claude streaming response for model '{model}' using subAccount '{subaccount_name}'")
-    logging.debug(f"Forwarding payload to API (Claude streaming): {json.dumps(payload, indent=2)}")
+    logging.debug("Forwarding payload to API (Claude streaming): %s", _LazyJSON(payload, indent=2))
     logging.debug(f"Request URL: {url}")
     logging.debug(f"Request headers: {headers}")
 
@@ -3922,7 +3956,7 @@ def generate_claude_streaming_response(url, headers, payload, model, subaccount_
 
                 try:
                     backend_chunk = json.loads(line_str)
-                    logging.debug(f"Parsed backend chunk: {json.dumps(backend_chunk, indent=2)}")
+                    logging.debug("Parsed backend chunk: %s", _LazyJSON(backend_chunk, indent=2))
 
                     claude_delta = None
                     if is_gemini_model(model):
@@ -4004,20 +4038,23 @@ atexit.register(cleanup_on_exit)
 # Periodic connection pool maintenance
 # ------------------------
 def maintain_connection_pool():
-    """Periodically clean up idle connections in the HTTP session pool"""
+    """Periodic heartbeat for the HTTP session pool.
+
+    Previously this called ``poolmanager.clear()`` every 5 minutes, which
+    discarded *all* pooled keep-alive connections — including warm, healthy
+    ones — forcing a fresh TLS handshake on the next request to each host.
+    urllib3 already reaps genuinely idle/broken connections on checkout, so
+    the periodic clear cost more (re-handshakes under load) than it saved.
+
+    We keep the thread as a lightweight liveness log and no longer tear down
+    the pool.
+    """
     while True:
         try:
             time.sleep(300)  # Run every 5 minutes
-            logging.debug("Running connection pool maintenance...")
-            # Force close idle connections by recreating adapters
-            for prefix in ['http://', 'https://']:
-                adapter = _http_session.get_adapter(prefix)
-                if hasattr(adapter, 'poolmanager') and adapter.poolmanager:
-                    # Clear connections that have been idle
-                    adapter.poolmanager.clear()
-            logging.debug("Connection pool maintenance completed")
+            logging.debug("Connection pool heartbeat (no teardown)")
         except Exception as e:
-            logging.error(f"Error in connection pool maintenance: {e}")
+            logging.error(f"Error in connection pool heartbeat: {e}")
 
 
 if __name__ == '__main__':

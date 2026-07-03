@@ -102,6 +102,26 @@ class TestLoadBalanceUrl(unittest.TestCase):
         with self.assertRaises(ValueError):
             load_balance_url("shared-model")
 
+    def test_concurrent_calls_do_not_lose_increments(self):
+        # Regression guard for the thread-safety fix: N concurrent calls must
+        # advance the model counter by exactly N (no lost read-modify-writes).
+        import threading
+
+        n = 200
+        barrier = threading.Barrier(n)
+
+        def worker():
+            barrier.wait()  # maximize contention
+            load_balance_url("shared-model")
+
+        threads = [threading.Thread(target=worker) for _ in range(n)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        self.assertEqual(load_balance_url.counters["shared-model"], n)
+
 
 if __name__ == "__main__":
     unittest.main()
