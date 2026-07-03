@@ -296,17 +296,35 @@ You can send a demo request to the proxy server using the `proxy_server_demo_req
 python proxy_server_demo_request.py
 ```
 
+## Testing
+
+Unit tests live in the `tests/` folder and run with Python's built-in `unittest` (no extra
+dependencies). From the project root:
+```sh
+python -m unittest discover -p 'test_*.py'
+```
+The suite covers model routing, load balancing, request/response/streaming conversions, Bedrock
+sanitizers, and the Flask endpoints. All upstream SAP AI Core calls are mocked, so the tests run
+offline and are safe to run before/after any change.
+
+For load testing against a running proxy, use the standalone script (resolves `config.json` from the
+project root):
+```sh
+python tests/load_testing.py
+CONFIG=configs/other.json python tests/load_testing.py   # optional: use a different config
+```
+
 ## Running the Local Chat Application
 
 To start the local chat application using `chat.py`, use the following command:
 ```shell
 python3 chat.py 
-python3 chat.py --model gpt-4o 
+python3 chat.py --model gpt-5.4 
 ```
 Example
 ```shell
 python3 chat.py 
-Starting chat with model: gpt-4o. Type 'exit' to end.
+Starting chat with model: gpt-5.4. Type 'exit' to end.
 You: Hello who are you
 Assistant: Hello! I'm an AI language model created by OpenAI. I'm here to help you with a wide range of questions and tasks. How can I assist you today?
 You: 
@@ -354,7 +372,6 @@ For more codex config please check
 
 ## Cursor(AI IDE) Integration with SAP AI Core
 You can run the proxy_server in your public server, then you can update the base_url in the Cursor model settings.
-**Now ONLY gpt-4o supported**
 Check the details
 - https://forum.cursor.com/t/custom-api-keys-fail-with-the-model-does-not-work-with-your-current-plan-or-api-key/97422
 
@@ -391,23 +408,23 @@ cat ~/.claude-code-router/config.json
 {
   "OPENAI_API_KEY": "your secret key",
   "OPENAI_BASE_URL": "http://127.0.0.1:3001/v1",
-  "OPENAI_MODEL": "3.7-sonnet",
+  "OPENAI_MODEL": "anthropic--claude-4.6-opus",
   "Providers": [
     {
       "name": "openrouter",
       "api_base_url": "http://127.0.0.1:3001/v1",
       "api_key": "your secret key",
       "models": [
-        "gpt-4o",
-	    "3.7-sonnet",
-	    "4-sonnet"
+        "gpt-5.4",
+	    "anthropic--claude-4.6-opus",
+	    "4.6-sonnet"
       ]
     }
   ],
   "Router": {
-    "background": "gpt-4o",
+    "background": "gpt-5.4",
     "think": "deepseek,deepseek-reasoner",
-    "longContext": "openrouter,3.7-sonnet"
+    "longContext": "openrouter,anthropic--claude-4.6-opus"
   }
 }
 ```
