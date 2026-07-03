@@ -299,5 +299,53 @@ class TestResponsesRoute(_RouteTestBase):
         self.assertEqual(r.get_json()["object"], "response")
 
 
+class TestCountTokensRoute(_RouteTestBase):
+    def _body(self):
+        return {
+            "model": "anthropic--claude-4.6-opus",
+            "system": "You are helpful.",
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "hello world " * 10}]}],
+            "tools": [{"name": "Read", "description": "read a file", "input_schema": {"type": "object"}}],
+        }
+
+    def test_returns_input_tokens(self):
+        # Claude Code calls with a ?beta=true query string — Flask routes ignore it.
+        r = self.client.post(
+            "/v1/messages/count_tokens?beta=true",
+            headers={"x-api-key": TOKEN, "Content-Type": "application/json"},
+            json=self._body(),
+        )
+        self.assertEqual(r.status_code, 200)
+        body = r.get_json()
+        self.assertIn("input_tokens", body)
+        self.assertIsInstance(body["input_tokens"], int)
+        self.assertGreater(body["input_tokens"], 0)
+
+    def test_more_content_yields_more_tokens(self):
+        small = {"model": "anthropic--claude-4.6-opus", "messages": [{"role": "user", "content": "hi"}]}
+        large = {"model": "anthropic--claude-4.6-opus",
+                 "messages": [{"role": "user", "content": "hi " * 500}]}
+        h = {"x-api-key": TOKEN, "Content-Type": "application/json"}
+        n_small = self.client.post("/v1/messages/count_tokens", headers=h, json=small).get_json()["input_tokens"]
+        n_large = self.client.post("/v1/messages/count_tokens", headers=h, json=large).get_json()["input_tokens"]
+        self.assertGreater(n_large, n_small)
+
+    def test_missing_model_400(self):
+        r = self.client.post(
+            "/v1/messages/count_tokens",
+            headers={"x-api-key": TOKEN, "Content-Type": "application/json"},
+            json={"messages": []},
+        )
+        self.assertEqual(r.status_code, 400)
+
+    def test_invalid_token_401(self):
+        r = self.client.post(
+            "/v1/messages/count_tokens",
+            headers={"x-api-key": "wrong", "Content-Type": "application/json"},
+            json=self._body(),
+        )
+        self.assertEqual(r.status_code, 401)
+
+
 if __name__ == "__main__":
     unittest.main()

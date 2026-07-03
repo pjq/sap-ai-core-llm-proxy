@@ -158,6 +158,96 @@ def request_payload_size(req):
 
 
 # ------------------------
+# Token counting (estimate)
+# ------------------------
+# SAP AI Core's Bedrock backend exposes no native count_tokens endpoint, so the
+# /v1/messages/count_tokens route returns an estimate. We use tiktoken (already a
+# dependency) as the counter. Note: tiktoken is OpenAI's tokenizer and undercounts
+# Claude by ~15-20% (more on code); this is a best-effort estimate, not exact.
+_token_encoder = None
+_token_encoder_lock = threading.Lock()
+
+
+def _get_token_encoder():
+    """Lazily load and cache a tiktoken encoder (cl100k_base)."""
+    global _token_encoder
+    if _token_encoder is None:
+        with _token_encoder_lock:
+            if _token_encoder is None:
+                import tiktoken
+                _token_encoder = tiktoken.get_encoding("cl100k_base")
+    return _token_encoder
+
+
+def _flatten_content_to_text(content):
+    """Flatten Anthropic message content (str or list of blocks) into plain text
+    for token estimation. Pulls text out of text/tool_result blocks and stringifies
+    the rest so structural tokens are still roughly accounted for."""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict):
+                if isinstance(block.get("text"), str):
+                    parts.append(block["text"])
+                elif block.get("type") == "tool_result":
+                    parts.append(_flatten_content_to_text(block.get("content")))
+                elif block.get("type") == "tool_use":
+                    # name + serialized input approximates the tokens the model sees
+                    parts.append(str(block.get("name", "")))
+                    try:
+                        parts.append(json.dumps(block.get("input", {})))
+                    except Exception:
+                        parts.append(str(block.get("input", "")))
+                else:
+                    try:
+                        parts.append(json.dumps(block))
+                    except Exception:
+                        parts.append(str(block))
+        return "\n".join(parts)
+    return str(content)
+
+
+def estimate_input_tokens(request_json):
+    """Estimate input tokens for an Anthropic Messages request body.
+
+    Concatenates system, all message content, and tool definitions, then counts
+    with tiktoken. Returns an int (best-effort estimate)."""
+    encoder = _get_token_encoder()
+    segments = []
+
+    system = request_json.get("system")
+    if system is not None:
+        segments.append(_flatten_content_to_text(system))
+
+    for message in request_json.get("messages", []) or []:
+        if isinstance(message, dict):
+            segments.append(str(message.get("role", "")))
+            segments.append(_flatten_content_to_text(message.get("content")))
+
+    tools = request_json.get("tools")
+    if isinstance(tools, list):
+        for tool in tools:
+            if isinstance(tool, dict):
+                segments.append(str(tool.get("name", "")))
+                segments.append(str(tool.get("description", "")))
+                schema = tool.get("input_schema")
+                if schema is not None:
+                    try:
+                        segments.append(json.dumps(schema))
+                    except Exception:
+                        segments.append(str(schema))
+
+    text = "\n".join(s for s in segments if s)
+    return len(encoder.encode(text))
+
+
+# ------------------------
 # HTTP Session with Connection Pool Management
 # ------------------------
 def create_http_session():
@@ -3349,6 +3439,46 @@ def proxy_claude_request():
             }
         }
         return jsonify(error_dict), 500
+
+
+@app.route('/v1/messages/count_tokens', methods=['POST'])
+def count_tokens():
+    """Anthropic Messages token-counting endpoint.
+
+    Claude Code and the Anthropic SDK call this before sending a request to
+    estimate the prompt size. SAP AI Core's Bedrock backend has no native
+    count_tokens, so we return a tiktoken-based estimate in the Anthropic
+    response shape: {"input_tokens": <int>}.
+    """
+    request_id = f"{int(time.time() * 1000)}-{random.randint(1000, 9999)}"
+    _size = request_payload_size(request)
+    logging.info("[%s] Received request to /v1/messages/count_tokens (payload size: %s / %s bytes)",
+                 request_id, _format_bytes(_size), _size)
+
+    if not verify_request_token(request):
+        return jsonify({
+            "type": "error",
+            "error": {"type": "authentication_error", "message": "Invalid API Key provided."}
+        }), 401
+
+    request_json = request.get_json(silent=True) or {}
+    if not request_json.get("model"):
+        return jsonify({
+            "type": "error",
+            "error": {"type": "invalid_request_error", "message": "Missing 'model' parameter"}
+        }), 400
+
+    try:
+        input_tokens = estimate_input_tokens(request_json)
+    except Exception as e:
+        logging.error(f"[{request_id}] Error estimating tokens: {e}", exc_info=True)
+        return jsonify({
+            "type": "error",
+            "error": {"type": "api_error", "message": f"Failed to count tokens: {e}"}
+        }), 500
+
+    logging.info("[%s] count_tokens estimate: %d input tokens (tiktoken approximation)", request_id, input_tokens)
+    return jsonify({"input_tokens": input_tokens}), 200
 
 
 def proxy_claude_request_original():

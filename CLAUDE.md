@@ -9,6 +9,7 @@ A Python/Flask proxy server that translates OpenAI-compatible and Anthropic Clau
 - `/v1/chat/completions` — OpenAI Chat Completions API (streaming + non-streaming)
 - `/v1/responses` — OpenAI Responses API (used by Codex CLI, modern OpenAI clients)
 - `/v1/messages` — Anthropic Claude Messages API (used by Claude Code)
+- `/v1/messages/count_tokens` — Anthropic token-counting endpoint (returns a tiktoken-based estimate; SAP AI Core Bedrock has no native count_tokens)
 - `/v1/embeddings` — OpenAI Embeddings API
 - `/v1/models` — List available models
 - `/health` — Health check
