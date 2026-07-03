@@ -55,6 +55,9 @@ A Python/Flask proxy server that translates OpenAI-compatible and Anthropic Clau
 - Global `_bedrock_clients` dict for SAP AI SDK clients (Claude models)
 - `proxy_config` global holds all runtime state (subaccounts, model→subaccount mapping)
 - Default fallback: GPT → `gpt-5.4`, Claude → `anthropic--claude-4.6-opus`
+- `load_balance_url()` round-robin counters are guarded by `_load_balance_lock` (Waitress runs ~100 threads)
+- Verbose debug logging uses the `_LazyJSON` wrapper so `json.dumps` only runs when DEBUG is enabled
+- Streaming reads the GPT/other branch with `iter_content(chunk_size=8192)`; model-type predicates are hoisted out of per-chunk loops
 
 ## Running
 ```shell
@@ -63,6 +66,28 @@ python proxy_server.py --config config.json --debug
 ```
 
 ## Testing
+
+### Unit tests
+All tests live in `tests/` (a package with `__init__.py` + `conftest.py` that put the project
+root on `sys.path`). No pytest in `.venv` — use the stdlib `unittest` runner:
+```shell
+python -m unittest discover -p 'test_*.py'   # run from the project root
+```
+The suite is a characterization net (~130 tests) covering the model predicates, load balancer,
+request/response/chunk converters, sanitizers, streaming generators, and Flask routes. All upstream
+I/O is mocked — no real SAP AI Core calls. Run it before and after any change to `proxy_server.py`;
+green means behavior preserved. Tests that pin an intentional current quirk are marked
+`# QUIRK: revisit in optimization`.
+
+### Load testing
+`tests/load_testing.py` is a standalone load-test script (not part of the unit suite — it hits a
+live proxy). It resolves `config.json` from the project root, so run it from anywhere:
+```shell
+python tests/load_testing.py            # uses config.json at project root
+CONFIG=configs/other.json python tests/load_testing.py
+```
+
+### Manual smoke tests (against a running server)
 ```shell
 # Chat completions
 curl http://127.0.0.1:3001/v1/chat/completions \
