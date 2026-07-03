@@ -214,10 +214,18 @@ def _flatten_content_to_text(content):
 
 
 def estimate_input_tokens(request_json):
-    """Estimate input tokens for an Anthropic Messages request body.
+    """Estimate input tokens for a request body, best-effort and schema-tolerant.
 
-    Concatenates system, all message content, and tool definitions, then counts
-    with tiktoken. Returns an int (best-effort estimate)."""
+    Handles the fields used across all the proxy's inbound shapes:
+      - Anthropic Messages: system, messages, tools (input_schema)
+      - OpenAI chat/completions: messages, tools (function.parameters)
+      - OpenAI Responses: instructions, input (string or list), tools
+      - Embeddings: input (string or list)
+    Counts the concatenation with tiktoken. Returns an int (approximation —
+    tiktoken is OpenAI's tokenizer, so Claude counts are undercounted ~15-20%)."""
+    if not isinstance(request_json, dict):
+        return 0
+
     encoder = _get_token_encoder()
     segments = []
 
@@ -225,26 +233,67 @@ def estimate_input_tokens(request_json):
     if system is not None:
         segments.append(_flatten_content_to_text(system))
 
+    instructions = request_json.get("instructions")
+    if isinstance(instructions, str):
+        segments.append(instructions)
+
     for message in request_json.get("messages", []) or []:
         if isinstance(message, dict):
             segments.append(str(message.get("role", "")))
             segments.append(_flatten_content_to_text(message.get("content")))
 
+    # Responses API `input` / embeddings `input` (string, or list of items/blocks).
+    input_field = request_json.get("input")
+    if isinstance(input_field, str):
+        segments.append(input_field)
+    elif isinstance(input_field, list):
+        for item in input_field:
+            if isinstance(item, str):
+                segments.append(item)
+            elif isinstance(item, dict):
+                # Responses input items carry text under "content"; fall back to whole dict.
+                if "content" in item or "text" in item:
+                    segments.append(_flatten_content_to_text(item.get("content", item.get("text"))))
+                else:
+                    segments.append(_flatten_content_to_text(item))
+
     tools = request_json.get("tools")
     if isinstance(tools, list):
         for tool in tools:
-            if isinstance(tool, dict):
-                segments.append(str(tool.get("name", "")))
-                segments.append(str(tool.get("description", "")))
-                schema = tool.get("input_schema")
-                if schema is not None:
-                    try:
-                        segments.append(json.dumps(schema))
-                    except Exception:
-                        segments.append(str(schema))
+            if not isinstance(tool, dict):
+                continue
+            # Anthropic tool shape
+            segments.append(str(tool.get("name", "")))
+            segments.append(str(tool.get("description", "")))
+            schema = tool.get("input_schema")
+            # OpenAI tool shape: {"type":"function","function":{name,description,parameters}}
+            fn = tool.get("function")
+            if isinstance(fn, dict):
+                segments.append(str(fn.get("name", "")))
+                segments.append(str(fn.get("description", "")))
+                schema = schema if schema is not None else fn.get("parameters")
+            if schema is not None:
+                try:
+                    segments.append(json.dumps(schema))
+                except Exception:
+                    segments.append(str(schema))
 
     text = "\n".join(s for s in segments if s)
     return len(encoder.encode(text))
+
+
+def request_token_estimate(req):
+    """Best-effort input-token estimate for the current request, for logging.
+
+    Never raises — returns None if the body can't be parsed or estimated, so it
+    can be dropped straight into a log line alongside the byte size."""
+    try:
+        body = req.get_json(silent=True, cache=True)
+        if not body:
+            return None
+        return estimate_input_tokens(body)
+    except Exception:
+        return None
 
 
 # ------------------------
@@ -332,7 +381,8 @@ def get_sapaicore_sdk_client(model_name: str):
 @app.route('/v1/embeddings', methods=['POST'])
 def handle_embedding_request():
     _size = request_payload_size(request)
-    logging.info("Received request to /v1/embeddings (payload size: %s / %s bytes)", _format_bytes(_size), _size)
+    logging.info("Received request to /v1/embeddings (payload size: %s / %s bytes, ~%s tokens)",
+                 _format_bytes(_size), _size, request_token_estimate(request))
     if not verify_request_token(request):
         return jsonify({"error": "Unauthorized"}), 401
     
@@ -2255,7 +2305,8 @@ content_type="Application/json"
 def proxy_openai_stream():
     """Main handler for chat completions endpoint with multi-subAccount support."""
     _size = request_payload_size(request)
-    logging.info("Received request to /v1/chat/completions (payload size: %s / %s bytes)", _format_bytes(_size), _size)
+    logging.info("Received request to /v1/chat/completions (payload size: %s / %s bytes, ~%s tokens)",
+                 _format_bytes(_size), _size, request_token_estimate(request))
     logging.debug(f"Request headers: {request.headers}")
     logging.debug("Request body:\n%s", _LazyJSON(request.get_json(), indent=4))
     
@@ -2924,7 +2975,8 @@ def generate_responses_streaming(endpoint_url, headers, chat_payload, model, sub
 def proxy_responses_request():
     """Handler for OpenAI Responses API endpoint."""
     _size = request_payload_size(request)
-    logging.info("Received request to /v1/responses (payload size: %s / %s bytes)", _format_bytes(_size), _size)
+    logging.info("Received request to /v1/responses (payload size: %s / %s bytes, ~%s tokens)",
+                 _format_bytes(_size), _size, request_token_estimate(request))
     logging.debug(f"Request headers: {request.headers}")
     logging.debug("Request body:\n%s", _LazyJSON(request.get_json(), indent=4))
 
@@ -3039,7 +3091,8 @@ def proxy_claude_request():
     request_id = f"{int(start_time * 1000)}-{random.randint(1000, 9999)}"
 
     _size = request_payload_size(request)
-    logging.info("[%s] Received request to /v1/messages (payload size: %s / %s bytes)", request_id, _format_bytes(_size), _size)
+    logging.info("[%s] Received request to /v1/messages (payload size: %s / %s bytes, ~%s tokens)",
+                 request_id, _format_bytes(_size), _size, request_token_estimate(request))
     logging.debug(f"Request headers: {request.headers}")
     logging.debug("Request body:\n%s", _LazyJSON(request.get_json(), indent=4))
 
