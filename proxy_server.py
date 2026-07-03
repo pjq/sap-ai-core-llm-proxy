@@ -130,6 +130,33 @@ class _LazyJSON:
             return repr(self.obj)
 
 
+def _format_bytes(num_bytes):
+    """Human-readable byte size, e.g. 512 B, 3.4 KB, 1.2 MB."""
+    if num_bytes is None:
+        return "unknown"
+    size = float(num_bytes)
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024 or unit == "GB":
+            return f"{int(size)} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+
+
+def request_payload_size(req):
+    """Return the raw request payload size in bytes.
+
+    Prefers the Content-Length header (bytes on the wire, no extra work). Falls
+    back to measuring the buffered body if the header is absent (e.g. chunked
+    transfer). Returns None if the size can't be determined.
+    """
+    length = req.content_length
+    if length is not None:
+        return length
+    try:
+        return len(req.get_data(cache=True))
+    except Exception:
+        return None
+
+
 # ------------------------
 # HTTP Session with Connection Pool Management
 # ------------------------
@@ -214,7 +241,8 @@ def get_sapaicore_sdk_client(model_name: str):
 
 @app.route('/v1/embeddings', methods=['POST'])
 def handle_embedding_request():
-    logging.info("Received request to /v1/embeddings")
+    _size = request_payload_size(request)
+    logging.info("Received request to /v1/embeddings (payload size: %s / %s bytes)", _format_bytes(_size), _size)
     if not verify_request_token(request):
         return jsonify({"error": "Unauthorized"}), 401
     
@@ -2136,7 +2164,8 @@ content_type="Application/json"
 @app.route('/v1/chat/completions', methods=['POST'])
 def proxy_openai_stream():
     """Main handler for chat completions endpoint with multi-subAccount support."""
-    logging.info("Received request to /v1/chat/completions")
+    _size = request_payload_size(request)
+    logging.info("Received request to /v1/chat/completions (payload size: %s / %s bytes)", _format_bytes(_size), _size)
     logging.debug(f"Request headers: {request.headers}")
     logging.debug("Request body:\n%s", _LazyJSON(request.get_json(), indent=4))
     
@@ -2804,7 +2833,8 @@ def generate_responses_streaming(endpoint_url, headers, chat_payload, model, sub
 @app.route('/v1/responses', methods=['POST'])
 def proxy_responses_request():
     """Handler for OpenAI Responses API endpoint."""
-    logging.info("Received request to /v1/responses")
+    _size = request_payload_size(request)
+    logging.info("Received request to /v1/responses (payload size: %s / %s bytes)", _format_bytes(_size), _size)
     logging.debug(f"Request headers: {request.headers}")
     logging.debug("Request body:\n%s", _LazyJSON(request.get_json(), indent=4))
 
@@ -2918,7 +2948,8 @@ def proxy_claude_request():
     start_time = time.time()
     request_id = f"{int(start_time * 1000)}-{random.randint(1000, 9999)}"
 
-    logging.info(f"[{request_id}] Received request to /v1/messages")
+    _size = request_payload_size(request)
+    logging.info("[%s] Received request to /v1/messages (payload size: %s / %s bytes)", request_id, _format_bytes(_size), _size)
     logging.debug(f"Request headers: {request.headers}")
     logging.debug("Request body:\n%s", _LazyJSON(request.get_json(), indent=4))
 
