@@ -10,7 +10,8 @@ import base64
 import random
 import os
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
+import shutil
 import argparse
 import re
 import ast
@@ -479,6 +480,274 @@ token_logger.addHandler(file_handler)
 # Prevent token_logger from propagating to root logger (avoid duplicate logs)
 token_logger.propagate = False
 
+# --- Request/Response File Logger ---
+# Enabled via --log-requests CLI flag. When enabled, writes JSON files capturing
+# the full 4-stage lifecycle of each request to logs/requests/YYYY-MM-DD/.
+_log_requests_enabled = False
+
+
+class RequestFileLogger:
+    """Thread-safe file-based request/response lifecycle logger.
+
+    Writes JSON payloads to per-day subdirectories under logs/requests/.
+    Zero-cost when disabled: the first check in log() is a simple boolean test.
+    Thread-safe by design: each file has a unique name (timestamp + request_id),
+    so concurrent writes never collide. Only directory creation needs a lock.
+    """
+
+    BASE_DIR = os.path.join("logs", "requests")
+    _dir_cache = set()
+    _dir_cache_lock = threading.Lock()
+
+    @classmethod
+    def _ensure_dir(cls, date_str):
+        """Create date subdirectory if not yet created this session (thread-safe, cached)."""
+        if date_str in cls._dir_cache:
+            return
+        with cls._dir_cache_lock:
+            if date_str not in cls._dir_cache:
+                dir_path = os.path.join(cls.BASE_DIR, date_str)
+                os.makedirs(dir_path, exist_ok=True)
+                cls._dir_cache.add(date_str)
+
+    @classmethod
+    def log(cls, request_id, model, stage_num, stage_name, payload, agent=None):
+        """Write a single stage file for a request lifecycle.
+
+        Args:
+            request_id: Unique request identifier (e.g. "1721623425482-3847")
+            model: Model name string
+            stage_num: 1-4 integer indicating lifecycle stage
+            stage_name: One of "client_request", "transformed_request",
+                        "backend_response", "client_response"
+            payload: dict or string to serialize as JSON
+            agent: Optional agent/client identifier (e.g. "ClaudeCode", "Pi", "Codex")
+        """
+        if not _log_requests_enabled:
+            return
+
+        try:
+            now = datetime.now()
+            date_str = now.strftime("%Y-%m-%d")
+            time_str = now.strftime("%H%M%S")
+            ms_str = f"{now.microsecond // 1000:03d}"
+
+            # Sanitize model name for filesystem (replace non-alphanum with _, truncate)
+            model_short = re.sub(r'[^\w\-.]', '_', model or "unknown")[:20]
+
+            # Use last 8 chars of request_id as short correlation key
+            req_id_short = (request_id or "unknown")[-8:]
+
+            # Sanitize agent name for filesystem
+            agent_part = re.sub(r'[^\w\-.]', '_', agent or "unknown")[:15]
+
+            cls._ensure_dir(date_str)
+
+            filename = f"{time_str}_{ms_str}_{req_id_short}_{agent_part}_{model_short}_{stage_num}_{stage_name}.json"
+            filepath = os.path.join(cls.BASE_DIR, date_str, filename)
+
+            # Serialize and write
+            if isinstance(payload, str):
+                content = payload
+            else:
+                content = json.dumps(payload, indent=2, ensure_ascii=False, default=str)
+
+            with open(filepath, 'w', encoding='utf-8') as f:
+                f.write(content)
+
+        except Exception as e:
+            # Never let logging failures crash the proxy
+            logging.warning("RequestFileLogger.log failed: %s", e)
+
+
+def _cleanup_request_logs():
+    """Delete request log directories older than 7 days. Runs every 6 hours as a daemon thread."""
+    while True:
+        time.sleep(6 * 3600)
+        if not _log_requests_enabled:
+            continue
+        try:
+            base = RequestFileLogger.BASE_DIR
+            if not os.path.exists(base):
+                continue
+            cutoff = datetime.now() - timedelta(days=7)
+            for entry in os.listdir(base):
+                try:
+                    dir_date = datetime.strptime(entry, "%Y-%m-%d")
+                    if dir_date < cutoff:
+                        shutil.rmtree(os.path.join(base, entry))
+                        logging.info("Cleaned up old request logs: %s", entry)
+                except ValueError:
+                    pass  # Not a date-formatted directory name
+        except Exception as e:
+            logging.warning("Request log cleanup error: %s", e)
+
+
+def _assemble_stream_response(chunks, model, prompt_tokens=0, completion_tokens=0, total_tokens=0):
+    """Assemble streaming chunks into a single response object matching non-streaming format.
+
+    Extracts content from OpenAI-style or Claude-style chunks and builds a clean
+    response dict (same shape as a non-streaming response).
+
+    Args:
+        chunks: List of chunk dicts or raw SSE strings
+        model: Model name
+        prompt_tokens: Prompt token count
+        completion_tokens: Completion token count
+        total_tokens: Total token count
+
+    Returns:
+        A dict resembling a non-streaming response with assembled content
+    """
+    content_parts = []
+    role = "assistant"
+    finish_reason = None
+    response_id = None
+
+    for chunk in chunks:
+        # Handle raw SSE string chunks (OpenAI pass-through)
+        if isinstance(chunk, str):
+            # Parse SSE lines like "data: {...}\n\n"
+            for line in chunk.strip().split('\n'):
+                line = line.strip()
+                if line.startswith("data: ") and line[6:].strip() != "[DONE]":
+                    try:
+                        data = json.loads(line[6:])
+                        delta = data.get("choices", [{}])[0].get("delta", {})
+                        if delta.get("content"):
+                            content_parts.append(delta["content"])
+                        if not response_id:
+                            response_id = data.get("id")
+                        fr = data.get("choices", [{}])[0].get("finish_reason")
+                        if fr:
+                            finish_reason = fr
+                    except (json.JSONDecodeError, IndexError, KeyError):
+                        pass
+            continue
+
+        if not isinstance(chunk, dict):
+            continue
+
+        # OpenAI-format chunks (from Claude/Gemini converted to OpenAI)
+        if "choices" in chunk:
+            delta = chunk.get("choices", [{}])[0].get("delta", {})
+            if delta.get("content"):
+                content_parts.append(delta["content"])
+            if not response_id:
+                response_id = chunk.get("id")
+            fr = chunk.get("choices", [{}])[0].get("finish_reason")
+            if fr:
+                finish_reason = fr
+
+        # Claude-native chunks (from /v1/messages Bedrock path)
+        chunk_type = chunk.get("type")
+        if chunk_type == "content_block_delta":
+            delta = chunk.get("delta", {})
+            if delta.get("type") == "text_delta":
+                content_parts.append(delta.get("text", ""))
+            elif delta.get("type") == "thinking_delta":
+                content_parts.append(delta.get("thinking", ""))
+        elif chunk_type == "message_start":
+            msg = chunk.get("message", {})
+            if not response_id:
+                response_id = msg.get("id")
+            role = msg.get("role", role)
+        elif chunk_type == "message_delta":
+            stop = chunk.get("delta", {}).get("stop_reason")
+            if stop:
+                finish_reason = stop
+
+    assembled_content = "".join(content_parts)
+
+    return {
+        "id": response_id or "stream-assembled",
+        "object": "chat.completion",
+        "model": model,
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": role,
+                "content": assembled_content
+            },
+            "finish_reason": finish_reason or "stop"
+        }],
+        "usage": {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens
+        },
+        "_streaming": True,
+        "_chunk_count": len(chunks)
+    }
+
+
+def _detect_agent(flask_request):
+    """Detect the coding agent/client from request headers or metadata.
+
+    Checks User-Agent header and known client-specific headers to identify
+    the source tool (Claude Code, Pi, Codex, Cursor, Aider, etc.).
+
+    Args:
+        flask_request: The Flask request object
+
+    Returns:
+        Short agent identifier string (e.g. "ClaudeCode", "Pi", "Codex")
+    """
+    user_agent = flask_request.headers.get("User-Agent", "").lower()
+    # x-client-name is used by some OpenAI SDK clients
+    x_client = flask_request.headers.get("x-client-name", "").lower()
+
+    # Claude Code
+    if "claude-code" in user_agent or "claudecode" in user_agent:
+        return "ClaudeCode"
+
+    # Pi (coding agent TUI)
+    if "pi/" in user_agent or "pi-agent" in user_agent:
+        return "Pi"
+
+    # Codex CLI (OpenAI)
+    if "codex" in user_agent or "codex" in x_client:
+        return "Codex"
+
+    # Cursor
+    if "cursor" in user_agent or "cursor" in x_client:
+        return "Cursor"
+
+    # Windsurf / Codeium
+    if "windsurf" in user_agent or "codeium" in user_agent:
+        return "Windsurf"
+
+    # Continue.dev
+    if "continue" in user_agent:
+        return "Continue"
+
+    # Aider
+    if "aider" in user_agent:
+        return "Aider"
+
+    # Cline / Roo Code
+    if "cline" in user_agent or "roo" in user_agent:
+        return "Cline"
+
+    # Copilot
+    if "copilot" in user_agent or "github-copilot" in user_agent:
+        return "Copilot"
+
+    # Generic OpenAI SDK clients
+    if "openai" in user_agent:
+        return "OpenAI-SDK"
+
+    # Anthropic SDK
+    if "anthropic" in user_agent:
+        return "Anthropic-SDK"
+
+    # Check x-client-name as fallback
+    if x_client:
+        return x_client[:15]
+
+    return "unknown"
+
+
 # Helper function to log token usage in plain text format
 def log_token_usage(model, subaccount_name, prompt_tokens, completion_tokens,
                     total_tokens, user_id=None, ip_address=None, is_streaming=False,
@@ -567,6 +836,8 @@ def parse_arguments():
     parser = argparse.ArgumentParser(description="Proxy server for AI models")
     parser.add_argument("--config", type=str, default="config.json", help="Path to the configuration file")
     parser.add_argument("--debug", action="store_true", help="Enable debug mode")
+    parser.add_argument("--log-requests", action="store_true",
+                        help="Enable file-based logging of full request/response payloads to logs/requests/")
     return parser.parse_args()
 
 def fetch_token(subaccount_name: str) -> str:
@@ -2304,12 +2575,15 @@ content_type="Application/json"
 @app.route('/v1/chat/completions', methods=['POST'])
 def proxy_openai_stream():
     """Main handler for chat completions endpoint with multi-subAccount support."""
+    start_time = time.time()
+    request_id = f"{int(start_time * 1000)}-{random.randint(1000, 9999)}"
+
     _size = request_payload_size(request)
     logging.info("Received request to /v1/chat/completions (payload size: %s / %s bytes, ~%s tokens)",
                  _format_bytes(_size), _size, request_token_estimate(request))
     logging.debug(f"Request headers: {request.headers}")
     logging.debug("Request body:\n%s", _LazyJSON(request.get_json(), indent=4))
-    
+
     # Verify client authentication token
     if not verify_request_token(request):
         logging.info("Unauthorized request received. Token verification failed.")
@@ -2321,18 +2595,24 @@ def proxy_openai_stream():
     if not model:
         logging.warning("No model specified in request, using default model")
         model = "gpt-5.4"  # Default model
-    
+
+    # Detect coding agent for file logging
+    _agent = _detect_agent(request)
+
+    # Stage 1: Log raw client request
+    RequestFileLogger.log(request_id, model, 1, "client_request", payload, agent=_agent)
+
     # Check if model is available in any subAccount
     if model not in proxy_config.model_to_subaccounts:
         logging.warning(f"Model '{model}' not found in any subAccount, falling back to default")
         model = "gpt-5.4"  # Fallback model
         if model not in proxy_config.model_to_subaccounts:
             return jsonify({"error": f"Model '{model}' not available in any subAccount."}), 404
-    
+
     # Check streaming mode
     is_stream = payload.get("stream", False)
     logging.info(f"Model: {model}, Streaming: {is_stream}")
-    
+
     try:
         # Handle request based on model type
         if is_claude_model(model):
@@ -2341,7 +2621,10 @@ def proxy_openai_stream():
             endpoint_url, modified_payload, subaccount_name = handle_gemini_request(payload, model)
         else:
             endpoint_url, modified_payload, subaccount_name = handle_default_request(payload, model)
-        
+
+        # Stage 2: Log transformed request (what we send to backend)
+        RequestFileLogger.log(request_id, model, 2, "transformed_request", modified_payload, agent=_agent)
+
         # Get token for the selected subAccount
         subaccount_token = fetch_token(subaccount_name)
         
@@ -2363,12 +2646,12 @@ def proxy_openai_stream():
         
         # Handle non-streaming requests
         if not is_stream:
-            return handle_non_streaming_request(endpoint_url, headers, modified_payload, model, subaccount_name)
-        
+            return handle_non_streaming_request(endpoint_url, headers, modified_payload, model, subaccount_name, request_id=request_id, agent=_agent)
+
         # Handle streaming requests
         return Response(
             stream_with_context(generate_streaming_response(
-                endpoint_url, headers, modified_payload, model, subaccount_name
+                endpoint_url, headers, modified_payload, model, subaccount_name, request_id=request_id, agent=_agent
             )),
             content_type='text/event-stream'
         )
@@ -2719,7 +3002,7 @@ def build_responses_api_response(completion_response, model, resp_id):
     return _build_response_object(resp_id, model, created_at, "completed", output, usage)
 
 
-def generate_responses_streaming(endpoint_url, headers, chat_payload, model, subaccount_name):
+def generate_responses_streaming(endpoint_url, headers, chat_payload, model, subaccount_name, request_id=None, agent=None):
     """Stream chat/completions and convert to Responses API SSE events."""
     resp_id = _gen_resp_id()
     msg_id = _gen_msg_id()
@@ -2970,10 +3253,18 @@ def generate_responses_streaming(endpoint_url, headers, chat_payload, model, sub
         "response": completed_response
     })
 
+    # Stage 3+4: Log assembled streaming response
+    if _log_requests_enabled and request_id:
+        RequestFileLogger.log(request_id, model, 3, "backend_response", completed_response, agent=_agent)
+        RequestFileLogger.log(request_id, model, 4, "client_response", completed_response, agent=_agent)
+
 
 @app.route('/v1/responses', methods=['POST'])
 def proxy_responses_request():
     """Handler for OpenAI Responses API endpoint."""
+    start_time = time.time()
+    request_id = f"{int(start_time * 1000)}-{random.randint(1000, 9999)}"
+
     _size = request_payload_size(request)
     logging.info("Received request to /v1/responses (payload size: %s / %s bytes, ~%s tokens)",
                  _format_bytes(_size), _size, request_token_estimate(request))
@@ -2998,6 +3289,12 @@ def proxy_responses_request():
 
     is_stream = payload.get("stream", False)
     logging.info(f"Responses API - Model: {model}, Streaming: {is_stream}")
+
+    # Detect coding agent for file logging
+    _agent = _detect_agent(request)
+
+    # Stage 1: Log raw client request
+    RequestFileLogger.log(request_id, model, 1, "client_request", payload, agent=_agent)
 
     # Convert Responses API format to chat/completions format
     messages = convert_responses_input_to_messages(payload)
@@ -3030,6 +3327,9 @@ def proxy_responses_request():
         else:
             endpoint_url, modified_payload, subaccount_name = handle_default_request(chat_payload, model)
 
+        # Stage 2: Log transformed request
+        RequestFileLogger.log(request_id, model, 2, "transformed_request", modified_payload, agent=_agent)
+
         subaccount_token = fetch_token(subaccount_name)
         resource_group = proxy_config.subaccounts[subaccount_name].resource_group
         service_key = proxy_config.subaccounts[subaccount_name].service_key
@@ -3059,12 +3359,18 @@ def proxy_responses_request():
             completion = resp.json()
             resp_id = _gen_resp_id()
             response_data = build_responses_api_response(completion, model, resp_id)
+
+            # Stage 3: Log raw backend response
+            RequestFileLogger.log(request_id, model, 3, "backend_response", completion, agent=_agent)
+            # Stage 4: Log transformed response sent to client
+            RequestFileLogger.log(request_id, model, 4, "client_response", response_data, agent=_agent)
+
             return jsonify(response_data), 200
 
         # Streaming
         return Response(
             stream_with_context(generate_responses_streaming(
-                endpoint_url, headers, modified_payload, model, subaccount_name
+                endpoint_url, headers, modified_payload, model, subaccount_name, request_id=request_id, agent=_agent
             )),
             content_type='text/event-stream',
             headers={
@@ -3111,6 +3417,12 @@ def proxy_claude_request():
     request_json = request.get_json(cache=False)
     request_model = request_json.get("model")
     logging.info(f"request_model is: {request_model}")
+
+    # Detect coding agent for file logging
+    _agent = _detect_agent(request)
+
+    # Stage 1: Log raw client request
+    RequestFileLogger.log(request_id, request_model or "unknown", 1, "client_request", request_json, agent=_agent)
 
     if not request_model:
         return jsonify({
@@ -3339,6 +3651,9 @@ def proxy_claude_request():
         # Convert body to JSON string for Bedrock API
         body_json = json.dumps(body)
 
+        # Stage 2: Log transformed request (what we send to Bedrock)
+        RequestFileLogger.log(request_id, model, 2, "transformed_request", body, agent=_agent)
+
         # Pretty-print for debugging only when DEBUG is enabled (lazy).
         logging.debug("Request body for Bedrock (pretty):\n%s", _LazyJSON(body, indent=2, ensure_ascii=False))
 
@@ -3353,6 +3668,7 @@ def proxy_claude_request():
                 prompt_tokens = 0
                 completion_tokens = 0
                 total_tokens = 0
+                _msg_chunks = []  # Accumulate chunks for request file logging
 
                 try:
                     response = bedrock.invoke_model_with_response_stream(body=body_json)
@@ -3362,6 +3678,9 @@ def proxy_claude_request():
                         for event in response_body:
                             chunk = json.loads(event["chunk"]["bytes"])
                             logging.debug(f"Streaming chunk: {chunk}")
+
+                            if _log_requests_enabled:
+                                _msg_chunks.append(chunk)
 
                             chunk_type = chunk.get("type")
 
@@ -3419,6 +3738,12 @@ def proxy_claude_request():
                         request_id=request_id
                     )
 
+                    # Stage 3+4: Log assembled streaming response (pass-through for Claude)
+                    if _log_requests_enabled and _msg_chunks:
+                        assembled = _assemble_stream_response(_msg_chunks, model, prompt_tokens, completion_tokens, total_tokens)
+                        RequestFileLogger.log(request_id, model, 3, "backend_response", assembled, agent=_agent)
+                        RequestFileLogger.log(request_id, model, 4, "client_response", assembled, agent=_agent)
+
                 except Exception as e:
                     logging.error(f"Error in streaming response: {e}", exc_info=True)
                     error_chunk = {
@@ -3475,6 +3800,10 @@ def proxy_claude_request():
                         duration_ms=duration_ms,
                         request_id=request_id
                     )
+
+                    # Stage 3+4: Log response (pass-through for Claude non-streaming)
+                    RequestFileLogger.log(request_id, model, 3, "backend_response", final_response, agent=_agent)
+                    RequestFileLogger.log(request_id, model, 4, "client_response", final_response, agent=_agent)
 
                     return jsonify(final_response), 200
                 else:
@@ -3640,7 +3969,7 @@ def proxy_claude_request_original():
         return jsonify({"type": "error", "error": {"type": "api_error", "message": "An unexpected error occurred."}}), 500
 
 
-def handle_non_streaming_request(url, headers, payload, model, subaccount_name):
+def handle_non_streaming_request(url, headers, payload, model, subaccount_name, request_id=None, agent=None):
     """Handle non-streaming request to backend API.
 
     Args:
@@ -3649,13 +3978,15 @@ def handle_non_streaming_request(url, headers, payload, model, subaccount_name):
         payload: Request payload
         model: Model name
         subaccount_name: Name of the selected subAccount
+        request_id: Optional caller-provided request ID for correlation
 
     Returns:
         Flask response with the API result
     """
     response = None  # Initialize for cleanup in finally block
     start_time = time.time()  # Track request duration
-    request_id = f"{int(start_time * 1000)}-{random.randint(1000, 9999)}"  # Generate unique request ID
+    if request_id is None:
+        request_id = f"{int(start_time * 1000)}-{random.randint(1000, 9999)}"  # Generate unique request ID
 
     try:
         # Log the raw request body and payload being forwarded
@@ -3668,12 +3999,18 @@ def handle_non_streaming_request(url, headers, payload, model, subaccount_name):
         logging.info(f"Non-streaming request succeeded for model '{model}' using subAccount '{subaccount_name}'")
         
         # Process response based on model type
+        backend_json = response.json()
         if is_claude_model(model):
-            final_response = convert_claude_to_openai(response.json(), model)
+            final_response = convert_claude_to_openai(backend_json, model)
         elif is_gemini_model(model):
-            final_response = convert_gemini_to_openai(response.json(), model)
+            final_response = convert_gemini_to_openai(backend_json, model)
         else:
-            final_response = response.json()
+            final_response = backend_json
+
+        # Stage 3: Log raw backend response
+        RequestFileLogger.log(request_id, model, 3, "backend_response", backend_json, agent=agent)
+        # Stage 4: Log transformed response sent to client
+        RequestFileLogger.log(request_id, model, 4, "client_response", final_response, agent=agent)
         
         # Extract token usage
         total_tokens = final_response.get("usage", {}).get("total_tokens", 0)
@@ -3728,7 +4065,7 @@ def handle_non_streaming_request(url, headers, payload, model, subaccount_name):
             response.close()
 
 
-def generate_streaming_response(url, headers, payload, model, subaccount_name):
+def generate_streaming_response(url, headers, payload, model, subaccount_name, request_id=None, agent=None):
     """Generate streaming response from backend API.
 
     Args:
@@ -3737,13 +4074,15 @@ def generate_streaming_response(url, headers, payload, model, subaccount_name):
         payload: Request payload
         model: Model name
         subaccount_name: Name of the selected subAccount
+        request_id: Optional caller-provided request ID for correlation
 
     Yields:
         SSE formatted response chunks
     """
     # Track request timing
     start_time = time.time()
-    request_id = f"{int(start_time * 1000)}-{random.randint(1000, 9999)}"
+    if request_id is None:
+        request_id = f"{int(start_time * 1000)}-{random.randint(1000, 9999)}"
 
     # Extract user info for logging (before generator context)
     auth_header = request.headers.get("Authorization", "unknown")
@@ -3760,6 +4099,7 @@ def generate_streaming_response(url, headers, payload, model, subaccount_name):
     completion_tokens = 0  # Initialize completion tokens
     claude_metadata = {}  # For Claude 3.7 metadata
     chunk = None  # Initialize chunk variable to avoid reference errors
+    _stream_chunks = []  # Accumulate chunks for request file logging
 
     # Hoist model-type predicates out of the per-chunk loops below — the model
     # doesn't change mid-stream, so these substring scans only need to run once.
@@ -3796,6 +4136,8 @@ def generate_streaming_response(url, headers, payload, model, subaccount_name):
                                 # Convert chunk to OpenAI format
                                 openai_sse_chunk_str = convert_claude37_chunk_to_openai(claude_dict_chunk, model)
                                 if openai_sse_chunk_str:
+                                    if _log_requests_enabled:
+                                        _stream_chunks.append(claude_dict_chunk)
                                     yield openai_sse_chunk_str
                             except Exception as e:
                                 logging.error(f"Error processing Claude 3.7 chunk from '{subaccount_name}': {e}", exc_info=True)
@@ -3845,6 +4187,8 @@ def generate_streaming_response(url, headers, payload, model, subaccount_name):
                                 openai_sse_chunk_str = convert_gemini_chunk_to_openai(gemini_chunk, model)
                                 if openai_sse_chunk_str:
                                     logging.debug(f"Gemini converted to OpenAI chunk: {openai_sse_chunk_str}")
+                                    if _log_requests_enabled:
+                                        _stream_chunks.append(gemini_chunk)
                                     yield openai_sse_chunk_str
                                 else:
                                     logging.debug(f"Gemini chunk conversion returned None")
@@ -3891,9 +4235,14 @@ def generate_streaming_response(url, headers, payload, model, subaccount_name):
                                     end = buffer.index("\n\n", start)
                                     json_chunk_str = buffer[start:end].strip()
                                     buffer = buffer[end + 2:]
-                                    
+
                                     # Convert Claude chunk to OpenAI format
                                     openai_sse_chunk_str = convert_claude_chunk_to_openai(json_chunk_str, model)
+                                    if _log_requests_enabled:
+                                        try:
+                                            _stream_chunks.append(json.loads(json_chunk_str))
+                                        except (json.JSONDecodeError, ValueError):
+                                            _stream_chunks.append(json_chunk_str)
                                     yield openai_sse_chunk_str.encode('utf-8')
                                     
                                     # Parse token usage if available
@@ -3911,6 +4260,11 @@ def generate_streaming_response(url, headers, payload, model, subaccount_name):
                                     logging.error(f"Error processing claude chunk: {e}", exc_info=True)
                                     break
                         else:  # OpenAI-like models
+                            if _log_requests_enabled:
+                                try:
+                                    _stream_chunks.append(chunk.decode('utf-8'))
+                                except Exception:
+                                    pass
                             yield chunk
                             try:
                                 # Try to extract token counts from final chunk
@@ -3946,6 +4300,12 @@ def generate_streaming_response(url, headers, payload, model, subaccount_name):
                 duration_ms=duration_ms,
                 request_id=request_id
             )
+
+            # Stage 3+4: Log assembled streaming response (backend=client for streaming)
+            if _log_requests_enabled and _stream_chunks:
+                assembled = _assemble_stream_response(_stream_chunks, model, prompt_tokens, completion_tokens, total_tokens)
+                RequestFileLogger.log(request_id, model, 3, "backend_response", assembled, agent=agent)
+                RequestFileLogger.log(request_id, model, 4, "client_response", assembled, agent=agent)
 
             # Standard stream end
             yield "data: [DONE]\n\n"
@@ -4278,6 +4638,12 @@ if __name__ == '__main__':
     if args.debug:
         logging.getLogger().setLevel(logging.DEBUG)
         logging.debug("Debug mode enabled")
+
+    # Enable request/response file logging
+    if args.log_requests:
+        _log_requests_enabled = True
+        os.makedirs(RequestFileLogger.BASE_DIR, exist_ok=True)
+        logging.info("Request/response file logging ENABLED -> %s", RequestFileLogger.BASE_DIR)
     
     logging.info(f"Loading configuration from: {args.config}")
     config = load_config(args.config)
@@ -4357,6 +4723,12 @@ if __name__ == '__main__':
     maintenance_thread = threading.Thread(target=maintain_connection_pool, daemon=True)
     maintenance_thread.start()
     logging.info("Started connection pool maintenance thread")
+
+    # Start request log cleanup thread (only if logging enabled)
+    if _log_requests_enabled:
+        cleanup_thread = threading.Thread(target=_cleanup_request_logs, daemon=True)
+        cleanup_thread.start()
+        logging.info("Started request log cleanup thread (7-day retention)")
 
     # Try to use waitress if available (production server)
     # Otherwise fall back to Flask dev server with thread limiting

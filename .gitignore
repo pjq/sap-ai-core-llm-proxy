@@ -237,3 +237,6 @@ cert.pem
 *.json
 config.json.bak
 config.json.bak2
+
+# Request/response log files
+logs/requests/

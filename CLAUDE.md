@@ -64,7 +64,24 @@ A Python/Flask proxy server that translates OpenAI-compatible and Anthropic Clau
 ```shell
 python proxy_server.py --config config.json
 python proxy_server.py --config config.json --debug
+python proxy_server.py --config config.json --log-requests
 ```
+
+### Request/Response File Logging
+When `--log-requests` is passed, the proxy writes JSON files capturing the full 4-stage
+lifecycle of each request to `logs/requests/YYYY-MM-DD/`:
+
+```
+logs/requests/2026-07-22/
+  110345_482_5482-3847_gpt-5.4_1_client_request.json
+  110345_482_5482-3847_gpt-5.4_2_transformed_request.json
+  110347_109_5482-3847_gpt-5.4_3_backend_response.json
+  110347_110_5482-3847_gpt-5.4_4_client_response.json
+```
+
+Files sharing the same `request_id` fragment (e.g. `5482-3847`) belong to the same request.
+Streaming responses are accumulated and written as a single assembled file at stream end.
+A background thread auto-deletes directories older than 7 days.
 
 ## Testing
 
