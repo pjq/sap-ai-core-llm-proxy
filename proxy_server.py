@@ -532,8 +532,12 @@ class RequestFileLogger:
             time_str = now.strftime("%H%M%S")
             ms_str = f"{now.microsecond // 1000:03d}"
 
-            # Sanitize model name for filesystem (replace non-alphanum with _, truncate)
-            model_short = re.sub(r'[^\w\-.]', '_', model or "unknown")[:20]
+            # Sanitize model name for filesystem — strip common prefixes and keep the useful part
+            raw_model = model or "unknown"
+            # Strip "anthropic--" prefix (SAP AI Core naming convention)
+            if raw_model.startswith("anthropic--"):
+                raw_model = raw_model[len("anthropic--"):]
+            model_short = re.sub(r'[^\w\-.]', '_', raw_model)[:25]
 
             # Use last 8 chars of request_id as short correlation key
             req_id_short = (request_id or "unknown")[-8:]
