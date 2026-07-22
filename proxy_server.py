@@ -684,8 +684,8 @@ def _assemble_stream_response(chunks, model, prompt_tokens=0, completion_tokens=
 def _detect_agent(flask_request):
     """Detect the coding agent/client from request headers or metadata.
 
-    Checks User-Agent header and known client-specific headers to identify
-    the source tool (Claude Code, Pi, Codex, Cursor, Aider, etc.).
+    Checks User-Agent header, known client-specific headers, and request body
+    hints to identify the source tool (Claude Code, Pi, Codex, Cursor, Aider, etc.).
 
     Args:
         flask_request: The Flask request object
@@ -701,8 +701,8 @@ def _detect_agent(flask_request):
     if "claude-code" in user_agent or "claudecode" in user_agent:
         return "ClaudeCode"
 
-    # Pi (coding agent TUI)
-    if "pi/" in user_agent or "pi-agent" in user_agent:
+    # Pi (coding agent TUI) — checks User-Agent and x-client-name
+    if "pi/" in user_agent or "pi-agent" in user_agent or "pi-coding" in user_agent:
         return "Pi"
 
     # Codex CLI (OpenAI)
@@ -732,6 +732,66 @@ def _detect_agent(flask_request):
     # Copilot
     if "copilot" in user_agent or "github-copilot" in user_agent:
         return "Copilot"
+
+    # --- Fallback: inspect request body for agent-specific tool/system patterns ---
+    try:
+        body = flask_request.get_json(silent=True, cache=True)
+        if body:
+            # Check system message or first message content for agent signatures
+            messages = body.get("messages", [])
+            # Look at the system message (first message or system field)
+            system_text = ""
+            if isinstance(body.get("system"), str):
+                system_text = body["system"][:500].lower()
+            elif isinstance(body.get("system"), list):
+                system_text = str(body["system"][:2])[:500].lower()
+            if messages and isinstance(messages, list):
+                first_msg = messages[0] if messages else {}
+                if first_msg.get("role") == "system":
+                    content = first_msg.get("content", "")
+                    if isinstance(content, str):
+                        system_text += content[:500].lower()
+
+            # Pi signatures
+            if "pi, a coding agent" in system_text or "pi-coding-agent" in system_text:
+                return "Pi"
+
+            # Claude Code signatures
+            if "claude code" in system_text or "anthropic's official cli" in system_text:
+                return "ClaudeCode"
+
+            # Codex CLI signatures
+            if "codex" in system_text and "openai" in system_text:
+                return "Codex"
+
+            # Check tool names for agent-specific patterns
+            tools = body.get("tools", [])
+            if tools and isinstance(tools, list):
+                tool_names = set()
+                for t in tools[:20]:  # Only check first 20 tools
+                    fn = t.get("function", {}) if isinstance(t, dict) else {}
+                    name = fn.get("name", "").lower()
+                    if name:
+                        tool_names.add(name)
+
+                # Pi tool signatures
+                if "observe_ui" in tool_names or "act_ui" in tool_names or "expand_ui" in tool_names:
+                    return "Pi"
+
+                # Claude Code tool signatures
+                if "todowrite" in tool_names or "todoread" in tool_names:
+                    return "ClaudeCode"
+
+                # Codex CLI tool signatures
+                if "shell" in tool_names and "apply_patch" in tool_names:
+                    return "Codex"
+
+                # Cursor tool signatures
+                if "codebase_search" in tool_names or "run_terminal_cmd" in tool_names:
+                    return "Cursor"
+
+    except Exception:
+        pass
 
     # Generic OpenAI SDK clients
     if "openai" in user_agent:
