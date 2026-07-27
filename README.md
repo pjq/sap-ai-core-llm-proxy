@@ -91,6 +91,8 @@ Now it supports the following LLM models
 - OpenAI: gpt-4o, gpt-4.1, gpt-5, gpt-5.4, gpt-5.3-codex, gpt-o3-mini, gpt-o3, gpt-o4-mini
 - Claude: 3.5-sonnet, 3.7-sonnet, 4-sonnet, 4.5-sonnet, 4.5-opus, 4.6-sonnet, 4.6-opus, 4.7-opus
 - Google Gemini: gemini-2.5-pro
+- Meta Llama: llama3.1-70b (meta--llama3.1-70b-instruct)
+- Mistral AI: mistral-large-instruct, mistral-medium-instruct, mistral-small-instruct (mistralai-- prefix required)
 
 Default fallback models:
 - OpenAI endpoint: gpt-5.4
@@ -147,6 +149,12 @@ Default fallback models:
                    ],
                    "3.5-sonnet": [
                        "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/<hidden_id_2>"
+                   ],
+                   "llama3.1-70b": [
+                       "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/<hidden_id_llama>"
+                   ],
+                   "mistralai--mistral-large-instruct": [
+                       "https://api.ai.intprod-eu12.eu-central-1.aws.ml.hana.ondemand.com/v2/inference/deployments/<hidden_id_mistral>"
                    ]
                }
            },
