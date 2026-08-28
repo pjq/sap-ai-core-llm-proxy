@@ -2545,6 +2545,14 @@ def handle_default_request(payload, model="gpt-4o"):
         api_version = "2023-05-15"
         modified_payload = payload.copy()
 
+    # GPT-5.6 models reject the legacy Chat Completions max_tokens field.
+    # Translate it to max_completion_tokens before forwarding to SAP AI Core.
+    if model.startswith("gpt-5.6") and "max_tokens" in modified_payload:
+        if "max_completion_tokens" not in modified_payload:
+            modified_payload["max_completion_tokens"] = modified_payload["max_tokens"]
+        del modified_payload["max_tokens"]
+        logging.info("Translated max_tokens to max_completion_tokens for GPT-5.6 model '%s'", model)
+
     # Remove reasoning-related parameters for GPT models
     # These parameters are Claude-specific and not supported by OpenAI GPT models
     unsupported_params = ['reasoning', 'reasoning_effort']
@@ -3412,7 +3420,7 @@ def proxy_responses_request():
             # Clean payload of unsupported fields
             for key in list(modified_payload.keys()):
                 if key not in ("model", "messages", "stream", "temperature", "top_p",
-                               "max_tokens", "tools", "tool_choice", "n", "stop",
+                               "max_tokens", "max_completion_tokens", "tools", "tool_choice", "n", "stop",
                                "presence_penalty", "frequency_penalty"):
                     del modified_payload[key]
             resp = _http_session.post(endpoint_url, headers=headers, json=modified_payload, timeout=300)
