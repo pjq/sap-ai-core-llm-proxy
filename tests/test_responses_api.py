@@ -522,6 +522,25 @@ class TestGenerateResponsesStreaming(unittest.TestCase):
         self.assertEqual(seq_nums, sorted(seq_nums))
         self.assertEqual(len(set(seq_nums)), len(seq_nums))
 
+    @patch('proxy_server._http_session')
+    @patch('proxy_server.fetch_token', return_value='test-token')
+    def test_streaming_preserves_max_completion_tokens(self, mock_token, mock_session):
+        """GPT-5.6 streaming requests must retain the translated token limit."""
+        from proxy_server import generate_responses_streaming
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.iter_lines.return_value = iter(['data: [DONE]'])
+        mock_session.post.return_value = mock_response
+
+        list(generate_responses_streaming(
+            "http://test", {},
+            {"messages": [], "max_completion_tokens": 1234},
+            "gpt-5.6-luna", "test"
+        ))
+
+        self.assertEqual(mock_session.post.call_args.kwargs["json"]["max_completion_tokens"], 1234)
+
 
 if __name__ == "__main__":
     unittest.main()

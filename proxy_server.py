@@ -3015,6 +3015,27 @@ def convert_responses_input_to_messages(payload):
                         reordered.append(messages[idx])
         messages = reordered
 
+    # Final defensive normalization. Responses API uses input_text/output_text,
+    # while the SAP AI Core Chat Completions backend only accepts text.
+    # Keep this pass separate from the main conversion so mixed/legacy client
+    # payloads cannot leak Responses-only block types into the backend request.
+    for message in messages:
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            part_type = part.get("type")
+            if part_type in ("input_text", "output_text"):
+                part["type"] = "text"
+            elif part_type == "input_image":
+                image_url = part.pop("image_url", part.pop("url", ""))
+                part["type"] = "image_url"
+                part["image_url"] = (
+                    {"url": image_url} if isinstance(image_url, str) else image_url
+                )
+
     return messages
 
 
@@ -3122,7 +3143,7 @@ def generate_responses_streaming(endpoint_url, headers, chat_payload, model, sub
         # Remove fields not supported by SAP AI Core backend
         for key in list(chat_payload.keys()):
             if key not in ("model", "messages", "stream", "temperature", "top_p",
-                           "max_tokens", "tools", "tool_choice", "n", "stop",
+                           "max_tokens", "max_completion_tokens", "tools", "tool_choice", "n", "stop",
                            "presence_penalty", "frequency_penalty"):
                 del chat_payload[key]
         response = _http_session.post(
