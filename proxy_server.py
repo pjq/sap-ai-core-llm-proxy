@@ -458,6 +458,16 @@ def format_embedding_response(response, model):
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+
+def _redact_headers(headers):
+    """Return headers safe for logs without exposing credentials."""
+    sensitive = {"authorization", "proxy-authorization", "x-api-key", "api-key", "cookie", "set-cookie"}
+    return {
+        key: "[REDACTED]" if key.lower() in sensitive else value
+        for key, value in headers.items()
+    }
+
+
 # Create a new logger for token usage
 token_logger = logging.getLogger('token_usage')
 token_logger.setLevel(logging.INFO)
@@ -2573,7 +2583,7 @@ def handle_default_request(payload, model="gpt-4o"):
 @app.route('/v1/chat/completions', methods=['OPTIONS'])
 def proxy_openai_stream2():
     logging.info("OPTIONS:Received request to /v1/chat/completions")
-    logging.debug(f"Request headers: {request.headers}")
+    logging.debug("Request headers: %s", _redact_headers(request.headers))
     logging.debug(f"Request payload as string: {request.data.decode('utf-8')}")
     return jsonify({
         "id": "gen-1747041021-KLZff2aBrJPmV6L1bZf1",
@@ -2622,7 +2632,7 @@ def health_check():
 def list_models():
     """Lists all available models across all subAccounts."""
     logging.info("Received request to /v1/models")
-    logging.info(f"Request headers: {request.headers}")
+    logging.info("Request headers: %s", _redact_headers(request.headers))
     # logging.info(f"Request payload: {request.get_json()}")
 
     # if not verify_request_token(request):
@@ -2653,7 +2663,7 @@ def proxy_openai_stream():
     _size = request_payload_size(request)
     logging.info("Received request to /v1/chat/completions (payload size: %s / %s bytes, ~%s tokens)",
                  _format_bytes(_size), _size, request_token_estimate(request))
-    logging.debug(f"Request headers: {request.headers}")
+    logging.debug("Request headers: %s", _redact_headers(request.headers))
     logging.debug("Request body:\n%s", _LazyJSON(request.get_json(), indent=4))
 
     # Verify client authentication token
@@ -3361,7 +3371,7 @@ def proxy_responses_request():
     _size = request_payload_size(request)
     logging.info("Received request to /v1/responses (payload size: %s / %s bytes, ~%s tokens)",
                  _format_bytes(_size), _size, request_token_estimate(request))
-    logging.debug(f"Request headers: {request.headers}")
+    logging.debug("Request headers: %s", _redact_headers(request.headers))
     logging.debug("Request body:\n%s", _LazyJSON(request.get_json(), indent=4))
 
     if not verify_request_token(request):
@@ -3492,7 +3502,7 @@ def proxy_claude_request():
     _size = request_payload_size(request)
     logging.info("[%s] Received request to /v1/messages (payload size: %s / %s bytes, ~%s tokens)",
                  request_id, _format_bytes(_size), _size, request_token_estimate(request))
-    logging.debug(f"Request headers: {request.headers}")
+    logging.debug("Request headers: %s", _redact_headers(request.headers))
     logging.debug("Request body:\n%s", _LazyJSON(request.get_json(), indent=4))
 
     # Validate API key using proxy config authentication
@@ -4462,7 +4472,7 @@ def generate_claude_streaming_response(url, headers, payload, model, subaccount_
     logging.info(f"Starting Claude streaming response for model '{model}' using subAccount '{subaccount_name}'")
     logging.debug("Forwarding payload to API (Claude streaming): %s", _LazyJSON(payload, indent=2))
     logging.debug(f"Request URL: {url}")
-    logging.debug(f"Request headers: {headers}")
+    logging.debug("Request headers: %s", _redact_headers(headers))
 
     # If the backend is already a Claude model, we need to convert the response format.
     if is_claude_model(model):

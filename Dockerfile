@@ -38,4 +38,4 @@ ENV CONFIG_PATH=/app/config.json \
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD curl -fsS http://localhost:${PORT}/v1/models || exit 1
 
 # Start the proxy server (host/port can be changed via env)
-CMD ["/bin/sh", "-lc", "python proxy_server.py --config ${CONFIG_PATH}${DEBUG:+ --debug} --debug"]
+CMD ["/bin/sh", "-lc", "set -- python proxy_server.py --config \"$CONFIG_PATH\"; if [ -n \"$DEBUG\" ]; then set -- \"$@\" --debug; fi; exec \"$@\""]

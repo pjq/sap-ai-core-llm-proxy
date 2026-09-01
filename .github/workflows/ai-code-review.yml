@@ -33,12 +33,15 @@ jobs:
       - name: Get PR diff
         id: get-pr-diff
         if: github.event_name == 'pull_request'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
         run: |
-          PR_NUMBER=${{ github.event.pull_request.number }}
-          echo "PR_NUMBER=$PR_NUMBER" >> $GITHUB_ENV
+          printf 'PR_NUMBER=%s\n' "$PR_NUMBER" >> "$GITHUB_ENV"
           
           echo "Fetching PR diff with curl..."
-          DIFF_URL="https://github.com/${{ github.repository }}/pull/${PR_NUMBER}.diff"
+          DIFF_URL="https://github.com/${REPOSITORY}/pull/${PR_NUMBER}.diff"
           curl -L -s $DIFF_URL > pr_diff.txt
           
           # Check if file is empty
@@ -47,11 +50,11 @@ jobs:
             
             # Try the GitHub API as a backup
             echo "Attempting to use gh CLI to get diff..."
-            if [ -z "${{ github.token }}" ]; then
+            if [ -z "$GITHUB_TOKEN" ]; then
               echo "No GitHub token available for API access"
             else
-              echo ${{ github.token }} | gh auth login --with-token
-              gh pr diff $PR_NUMBER > pr_diff.txt
+              printf '%s' "$GITHUB_TOKEN" | gh auth login --with-token
+              gh pr diff "$PR_NUMBER" > pr_diff.txt
             fi
           fi
           
@@ -63,9 +66,12 @@ jobs:
       - name: Get comment details
         id: get-comment-details
         if: github.event_name == 'issue_comment'
+        env:
+          COMMENT_ID: ${{ github.event.comment.id }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
         run: |
-          echo "COMMENT_ID=${{ github.event.comment.id }}" >> $GITHUB_ENV
-          echo "ISSUE_NUMBER=${{ github.event.issue.number }}" >> $GITHUB_ENV
+          printf 'COMMENT_ID=%s\n' "$COMMENT_ID" >> "$GITHUB_ENV"
+          printf 'ISSUE_NUMBER=%s\n' "$ISSUE_NUMBER" >> "$GITHUB_ENV"
 
       - name: Run AI Code Review
         id: ai-review
