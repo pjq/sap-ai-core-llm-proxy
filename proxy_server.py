@@ -2555,16 +2555,16 @@ def handle_default_request(payload, model="gpt-4o"):
         api_version = "2023-05-15"
         modified_payload = payload.copy()
 
-    # GPT-5.6 models reject the legacy Chat Completions max_tokens field.
-    # Translate it to max_completion_tokens before forwarding to SAP AI Core.
-    if model.startswith("gpt-5.6") and "max_tokens" in modified_payload:
+    # GPT-5.6 and GPT-6 models reject the legacy Chat Completions max_tokens field.
+    # This also normalizes max_output_tokens converted by the Responses route.
+    if model.startswith(("gpt-5.6", "gpt-6-", "gpt-6.")) and "max_tokens" in modified_payload:
         if "max_completion_tokens" not in modified_payload:
             modified_payload["max_completion_tokens"] = modified_payload["max_tokens"]
         del modified_payload["max_tokens"]
-        logging.info("Translated max_tokens to max_completion_tokens for GPT-5.6 model '%s'", model)
+        logging.info("Translated max_tokens to max_completion_tokens for model '%s'", model)
 
-    # Remove reasoning-related parameters for GPT models
-    # These parameters are Claude-specific and not supported by OpenAI GPT models
+    # Remove client reasoning controls from the legacy Chat Completions adapter.
+    # GPT-6 tools + reasoning use the native Responses route instead.
     unsupported_params = ['reasoning', 'reasoning_effort']
     removed_params = []
     for param in unsupported_params:
@@ -3362,6 +3362,55 @@ def generate_responses_streaming(endpoint_url, headers, chat_payload, model, sub
         RequestFileLogger.log(request_id, model, 4, "client_response", completed_response, agent=_agent)
 
 
+def forward_native_responses(payload, model, request_id, agent=None):
+    """Relay GPT-6 Responses without losing reasoning or function-call state."""
+    selected_url, subaccount_name, resource_group, resolved_model = load_balance_url(model)
+    subaccount = proxy_config.subaccounts[subaccount_name]
+    headers = {
+        "Authorization": f"Bearer {fetch_token(subaccount_name)}",
+        "AI-Resource-Group": resource_group,
+        "AI-Tenant-Id": subaccount.service_key.identityzoneid,
+        "Content-Type": "application/json",
+    }
+    backend_payload = dict(payload, model=resolved_model)
+    endpoint = f"{selected_url.rstrip('/')}/responses?api-version=2025-04-01-preview"
+    is_stream = bool(backend_payload.get("stream", False))
+    RequestFileLogger.log(request_id, model, 2, "transformed_request", backend_payload, agent=agent)
+    backend = _http_session.post(endpoint, headers=headers, json=backend_payload,
+                                 stream=is_stream, timeout=600)
+    if backend.status_code != 200:
+        try:
+            try:
+                error = backend.json()
+            except ValueError:
+                error = {"error": {"type": "server_error", "message": backend.text}}
+            return jsonify(error), backend.status_code
+        finally:
+            backend.close()
+    if not is_stream:
+        try:
+            data = backend.json()
+            RequestFileLogger.log(request_id, model, 3, "backend_response", data, agent=agent)
+            RequestFileLogger.log(request_id, model, 4, "client_response", data, agent=agent)
+            return jsonify(data), 200
+        finally:
+            backend.close()
+
+    def relay():
+        try:
+            # Keep native SSE events, reasoning items and call IDs byte-for-byte.
+            for chunk in backend.iter_content(chunk_size=8192):
+                if chunk:
+                    yield chunk
+        finally:
+            backend.close()
+
+    response = Response(stream_with_context(relay()), content_type="text/event-stream",
+                        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+    response.call_on_close(backend.close)
+    return response
+
+
 @app.route('/v1/responses', methods=['POST'])
 def proxy_responses_request():
     """Handler for OpenAI Responses API endpoint."""
@@ -3398,6 +3447,17 @@ def proxy_responses_request():
 
     # Stage 1: Log raw client request
     RequestFileLogger.log(request_id, model, 1, "client_request", payload, agent=_agent)
+
+    # These deployed GPT-6 models support reasoning + tools only on Responses.
+    # Bypass the lossy Chat Completions conversion, including on subsequent turns.
+    if model.startswith(("gpt-6.1-sol", "gpt-6-luna")):
+        try:
+            return forward_native_responses(payload, model, request_id, agent=_agent)
+        except ValueError as err:
+            return jsonify({"error": {"type": "invalid_request_error", "message": str(err)}}), 400
+        except Exception as err:
+            logging.exception("Native Responses forwarding failed for %s", model)
+            return jsonify({"error": {"type": "server_error", "message": str(err)}}), 500
 
     # Convert Responses API format to chat/completions format
     messages = convert_responses_input_to_messages(payload)
